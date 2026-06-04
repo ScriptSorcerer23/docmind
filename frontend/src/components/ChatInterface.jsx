@@ -67,7 +67,7 @@ export default function ChatInterface() {
         <span className="chat-header-title">Chat</span>
         <span className="chat-header-badge">
           <span className="chat-header-dot" />
-          MCP Agent Online
+          DocMind Agent Online
         </span>
       </div>
 

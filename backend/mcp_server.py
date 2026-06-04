@@ -8,7 +8,7 @@ from mcp.types import Tool, TextContent
 
 from config import supabase, embedder
 
-server = Server("rag-retrieval-server")
+server = Server("docmind-retrieval-server")
 
 
 @server.list_tools()

@@ -29,7 +29,7 @@ export default function App() {
         {/* Sidebar */}
         <aside className="sidebar">
           <div className="sidebar-header">
-            <h1>🔍 MCP RAG</h1>
+            <h1>🔍 DocMind</h1>
             <p>Document Intelligence Platform</p>
           </div>
           <UploadPanel onUploadComplete={handleUploadComplete} />

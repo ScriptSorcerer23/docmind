@@ -1,5 +1,5 @@
 -- ============================================================
--- MCP-Powered RAG System — Supabase Migration
+-- DocMind — Supabase Migration
 -- Run this entire script in the Supabase SQL Editor (one shot)
 -- ============================================================
 

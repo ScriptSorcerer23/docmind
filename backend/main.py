@@ -26,8 +26,8 @@ from agent import get_crew_response
 
 # ── App Initialization ─────────────────────────────────────────────
 app = FastAPI(
-    title="MCP-Powered RAG System",
-    description="Document intelligence platform with MCP-native retrieval and CrewAI orchestration.",
+    title="DocMind",
+    description="Agent-native document intelligence powered by MCP + CrewAI.",
     version="1.0.0",
 )
 
@@ -64,7 +64,7 @@ async def mcp_sse_endpoint(request: Request):
 # ── Health Check ───────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "service": "mcp-rag-backend"}
+    return {"status": "healthy", "service": "docmind-backend"}
 
 
 # ── Document Upload ────────────────────────────────────────────────
