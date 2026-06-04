@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-multipart
+supabase
+langchain
+langchain-community
+langchain-openai
+pypdf
+openai
+crewai
+crewai-tools
+mcp
+python-dotenv
+pydantic
