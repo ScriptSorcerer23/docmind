@@ -567,6 +567,7 @@ body {
   justify-content: center;
   flex-shrink: 0;
   color: white;
+  transition: box-shadow 600ms ease-out;
 }
 
 .message--user .message-avatar {
@@ -575,6 +576,20 @@ body {
 
 .message--assistant .message-avatar {
   background: linear-gradient(135deg, var(--accent-dark), var(--accent));
+}
+
+.message-avatar--active {
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.15), 0 0 0 6px rgba(124, 58, 237, 0.07), 0 0 14px rgba(124, 58, 237, 0.12);
+  animation: avatarGlow 2.4s ease-in-out infinite;
+}
+
+@keyframes avatarGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.09), 0 0 0 6px rgba(124, 58, 237, 0.042), 0 0 14px rgba(124, 58, 237, 0.072);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.15), 0 0 0 6px rgba(124, 58, 237, 0.07), 0 0 14px rgba(124, 58, 237, 0.12);
+  }
 }
 
 .message-bubble {

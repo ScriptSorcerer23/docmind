@@ -138,7 +138,7 @@ export default function ChatInterface() {
           {/* Agent thinking indicator */}
           {loading && (
             <div className="message message--assistant">
-              <div className="message-avatar">
+              <div className="message-avatar message-avatar--active">
                 <IconBot size={14} />
               </div>
               <div className="agent-steps">
