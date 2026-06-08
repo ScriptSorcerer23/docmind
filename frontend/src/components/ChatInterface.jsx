@@ -4,6 +4,102 @@ import SourceCard from './SourceCard';
 import { IconUser, IconBot, IconSend, IconLoader, IconSparkles } from './Icons';
 import toast from 'react-hot-toast';
 
+const parseMessageContent = (content) => {
+  if (!content) return null;
+
+  const parts = content.split(/(```[\s\S]*?```)/g);
+
+  const testRegex = new RegExp(
+    '^' +
+    '(?:' +
+    '[\\w\\.\\-\\+\\/\\\\]*[/\\\\][\\w\\-\\+\\/\\\\]+\\.[a-zA-Z0-9]{2,5}' +
+    '|' +
+    'v\\d+\\.\\d+\\.\\d+(?:-\\w+)?' +
+    '|' +
+    '[a-zA-Z0-9]{17,}' +
+    '|' +
+    '(?:gpt|claude|llama|gemini|mixtral|deepseek)-\\w+(?:-\\w+)*' +
+    ')' +
+    '$'
+  );
+
+  const techRegex = new RegExp(
+    '(' +
+    '[\\w\\.\\-\\+\\/\\\\]*[/\\\\][\\w\\-\\+\\/\\\\]+\\.[a-zA-Z0-9]{2,5}' +
+    '|' +
+    '\\bv\\d+\\.\\d+\\.\\d+(?:-\\w+)?\\b' +
+    '|' +
+    '\\b[a-zA-Z0-9]{17,}\\b' +
+    '|' +
+    '\\b(?:gpt|claude|llama|gemini|mixtral|deepseek)-\\w+(?:-\\w+)*\\b' +
+    ')',
+    'g'
+  );
+
+  return parts.map((part, index) => {
+    if (part.startsWith('```') && part.endsWith('```')) {
+      const codeLines = part.slice(3, -3).trim().split('\n');
+      const firstLine = codeLines[0];
+      const hasLang = /^[a-zA-Z0-9_-]+$/.test(firstLine);
+      const codeText = (hasLang ? codeLines.slice(1) : codeLines).join('\n');
+
+      return (
+        <pre key={index} className="system-output-block">
+          <code>{codeText}</code>
+        </pre>
+      );
+    }
+
+    const lines = part.split('\n');
+    return (
+      <div key={index} className="message-paragraph">
+        {lines.map((line, lineIdx) => {
+          const trimmedLine = line.trim();
+
+          if (trimmedLine.startsWith('>')) {
+            const systemText = line.substring(line.indexOf('>') + 1);
+            return (
+              <div key={lineIdx} className="system-output-line">
+                {systemText}
+              </div>
+            );
+          }
+
+          const inlineParts = line.split(/(`[^`\n]+`)/g);
+
+          const parsedLineContent = inlineParts.map((subPart, subIdx) => {
+            if (subPart.startsWith('`') && subPart.endsWith('`')) {
+              const inlineCode = subPart.slice(1, -1);
+              return (
+                <code key={subIdx} className="inline-code-span">
+                  {inlineCode}
+                </code>
+              );
+            }
+
+            const techParts = subPart.split(techRegex);
+            return techParts.map((techPart, techIdx) => {
+              if (testRegex.test(techPart)) {
+                return (
+                  <span key={techIdx} className="tech-token">
+                    {techPart}
+                  </span>
+                );
+              }
+              return techPart;
+            });
+          });
+
+          return (
+            <div key={lineIdx} className="message-line">
+              {parsedLineContent}
+            </div>
+          );
+        })}
+      </div>
+    );
+  });
+};
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState([]);
@@ -129,7 +225,9 @@ export default function ChatInterface() {
                 )}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minWidth: 0 }}>
-                <div className="message-bubble">{msg.content}</div>
+                <div className="message-bubble">
+                  {msg.role === 'assistant' ? parseMessageContent(msg.content) : msg.content}
+                </div>
                 {msg.role === 'assistant' && <SourceCard sources={msg.sources} />}
               </div>
             </div>
