@@ -1,30 +1,38 @@
 """
-FastAPI application — routes, MCP SSE mount, and CORS configuration.
+FastAPI application — routes, MCP SSE mount, CORS.
 """
 
 import os
+import sys
 import uuid
 import shutil
+import asyncio
 import tempfile
+import logging
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from mcp.server.sse import SseServerTransport
 
-from config import supabase
-from models import (
+from .config import supabase
+from .models import (
     ChatRequest,
     ChatResponse,
     UploadResponse,
-    DocumentRecord,
     Source,
 )
-from ingestion import ingest_document
-from mcp_server import server as mcp_server_instance
-from agent import get_crew_response
+from .ingestion import ingest_document
+from .mcp_server import server as mcp_server_instance
+from .agent import get_crew_response
 
-# ── App Initialization ─────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ── App ────────────────────────────────────────────────────────────
 app = FastAPI(
     title="DocMind",
     description="Agent-native document intelligence powered by MCP + CrewAI.",
@@ -34,11 +42,7 @@ app = FastAPI(
 # ── CORS ───────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",   # Vite dev server
-        "http://localhost:3000",
-        os.getenv("FRONTEND_URL", ""),
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -50,65 +54,76 @@ sse_transport = SseServerTransport("/mcp/messages")
 
 @app.get("/mcp/sse")
 async def mcp_sse_endpoint(request: Request):
-    """SSE endpoint for MCP client connections."""
+    """SSE endpoint — MCP clients connect here."""
     async with sse_transport.connect_sse(
         request.scope, request.receive, request._send
-    ) as streams:
+    ) as (read_stream, write_stream):
         await mcp_server_instance.run(
-            streams[0],
-            streams[1],
+            read_stream,
+            write_stream,
             mcp_server_instance.create_initialization_options(),
         )
 
 
-# ── Health Check ───────────────────────────────────────────────────
+# Mount the POST handler so MCP tool calls can be received
+app.mount("/mcp/messages", sse_transport.handle_post_message)
+
+
+# ── Health ─────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "service": "docmind-backend"}
+    return {"status": "ok"}
 
 
-# ── Document Upload ────────────────────────────────────────────────
+# ── Upload ─────────────────────────────────────────────────────────
 @app.post("/upload", response_model=UploadResponse)
 async def upload_document(file: UploadFile = File(...)):
     """Upload a PDF or TXT file for ingestion into the vector store."""
-    # Validate file type
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
 
-    allowed_extensions = (".pdf", ".txt")
-    if not file.filename.lower().endswith(allowed_extensions):
+    allowed = (".pdf", ".txt")
+    if not file.filename.lower().endswith(allowed):
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}",
+            detail=f"Unsupported file type. Allowed: {', '.join(allowed)}",
         )
 
-    # Save to temp file
     suffix = os.path.splitext(file.filename)[1]
     tmp_dir = tempfile.mkdtemp()
     tmp_path = os.path.join(tmp_dir, f"{uuid.uuid4()}{suffix}")
 
     try:
-        with open(tmp_path, "wb") as tmp_file:
+        with open(tmp_path, "wb") as f:
             content = await file.read()
-            tmp_file.write(content)
+            f.write(content)
 
-        # Run ingestion pipeline
-        doc_id, chunk_count, already_existed = ingest_document(tmp_path, file.filename)
+        doc_id, chunk_count, already_existed = await asyncio.to_thread(
+            ingest_document, tmp_path, file.filename
+        )
 
         return UploadResponse(
             doc_id=doc_id,
             filename=file.filename,
             chunk_count=chunk_count,
         )
+    except Exception as e:
+        error_str = str(e)
+        if "0 chunks" in error_str.lower() or "empty" in error_str.lower():
+            user_message = "This file doesn't appear to contain readable text. Please try a different PDF."
+        elif "size" in error_str.lower() or "large" in error_str.lower():
+            user_message = "This file is too large to process. Please try a smaller document."
+        else:
+            user_message = "Failed to upload the document. Please make sure it's a valid PDF or text file and try again."
+        raise HTTPException(status_code=500, detail=user_message)
     finally:
-        # Cleanup temp files
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ── Document Library ───────────────────────────────────────────────
 @app.get("/documents")
 async def list_documents():
-    """Return all uploaded documents for the frontend library panel."""
+    """Return all uploaded documents."""
     result = (
         supabase.table("documents")
         .select("id, filename, created_at")
@@ -121,7 +136,6 @@ async def list_documents():
 @app.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str):
     """Delete a document and its chunks (cascade via FK)."""
-    # Verify document exists
     check = (
         supabase.table("documents")
         .select("id")
@@ -136,17 +150,21 @@ async def delete_document(doc_id: str):
 
 
 # ── Chat ───────────────────────────────────────────────────────────
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    """
-    Send a message to the CrewAI agent.
-    The agent decides whether to retrieve from documents or answer directly.
-    """
+@app.post("/chat")
+def chat(request: ChatRequest):
     try:
-        answer, sources = get_crew_response(
-            message=request.message,
-            conversation_history=request.conversation_history,
-        )
+        answer, sources = get_crew_response(request.message, request.conversation_history)
         return ChatResponse(answer=answer, sources=sources)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Agent error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        error_str = str(e)
+        if "429" in error_str or "quota" in error_str.lower() or "RESOURCE_EXHAUSTED" in error_str:
+            user_message = "I'm a bit overwhelmed right now — too many requests at once. Please wait a moment and try again."
+        elif "timeout" in error_str.lower():
+            user_message = "That took too long to process. Please try again."
+        elif "connect" in error_str.lower() or "connection" in error_str.lower():
+            user_message = "I'm having trouble connecting to my services. Please check your internet connection and try again."
+        else:
+            user_message = "Something went wrong on my end. Please try again in a moment."
+        raise HTTPException(status_code=500, detail=user_message)

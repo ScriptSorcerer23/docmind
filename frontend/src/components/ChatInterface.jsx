@@ -1,48 +1,88 @@
 import { useState, useRef, useEffect } from 'react';
 import { sendMessage } from '../api/client';
 import SourceCard from './SourceCard';
-import { TypingIndicator } from './LoadingStates';
+import { IconUser, IconBot, IconSend, IconLoader, IconSparkles } from './Icons';
+import toast from 'react-hot-toast';
+
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const messagesEndRef = useRef(null);
+  const [agentStep, setAgentStep] = useState(0);
+  const [currentSteps, setCurrentSteps] = useState(['Analyzing query…']);
+  const containerRef = useRef(null);
   const inputRef = useRef(null);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = containerRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
   };
 
-  useEffect(() => { scrollToBottom(); }, [messages, loading]);
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, loading, agentStep]);
 
-  const buildHistory = () =>
-    messages.map((m) => ({ role: m.role, content: m.content }));
+  /* ── Send ────────────────────────────────────── */
+  const buildHistory = () => messages.map((m) => ({ role: m.role, content: m.content }));
 
   const handleSend = async () => {
     const text = input.trim();
     if (!text || loading) return;
 
-    const userMsg = { role: 'user', content: text };
-    setMessages((prev) => [...prev, userMsg]);
+    setMessages((prev) => [...prev, { role: 'user', content: text }]);
     setInput('');
     setLoading(true);
+    setCurrentSteps(['Analyzing query…']);
+    setAgentStep(0);
 
     try {
       const res = await sendMessage(text, buildHistory());
       const { answer, sources } = res.data;
+
+      if (sources && sources.length > 0) {
+        // Show "Searching documents..." for 800ms
+        setCurrentSteps([
+          'Analyzing query…',
+          'Searching documents…',
+          'Synthesizing answer…',
+        ]);
+        setAgentStep(1);
+        await new Promise((resolve) => setTimeout(resolve, 800));
+
+        // Show "Synthesizing answer..." for 800ms
+        setAgentStep(2);
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      } else {
+        // Skip "Searching documents..." and go straight to "Synthesizing answer..." for 800ms
+        setCurrentSteps([
+          'Analyzing query…',
+          'Synthesizing answer…',
+        ]);
+        setAgentStep(1);
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      }
+
+      setMessages((prev) => [...prev, { role: 'assistant', content: answer, sources }]);
+    } catch (err) {
+      const errorMessage = err.response?.data?.detail || 'Something went wrong. Please try again.';
+      toast.error(errorMessage);
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: answer, sources },
-      ]);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: 'Sorry, something went wrong. Please try again.', sources: [] },
+        {
+          role: 'assistant',
+          content: errorMessage,
+          sources: [],
+        },
       ]);
     } finally {
       setLoading(false);
-      inputRef.current?.focus();
+      // Use setTimeout to allow browser input to re-enable before focusing
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 50);
     }
   };
 
@@ -53,93 +93,101 @@ export default function ChatInterface() {
     }
   };
 
-  const handleChipClick = (text) => {
-    setInput(text);
-    inputRef.current?.focus();
-  };
-
   const hasMessages = messages.length > 0;
 
   return (
-    <div className="main-content">
+    <>
       {/* Header */}
       <div className="chat-header">
-        <span className="chat-header-title">Chat</span>
-        <span className="chat-header-badge">
+        <span className="chat-header-title">Agent Console</span>
+        <div className="chat-header-badge">
           <span className="chat-header-dot" />
-          DocMind Agent Online
-        </span>
+          <span>Active Agent</span>
+        </div>
       </div>
 
-      {/* Messages or Welcome */}
-      {!hasMessages ? (
+      {/* Messages / Empty State */}
+      {!hasMessages && !loading ? (
         <div className="welcome-state">
-          <span className="welcome-icon">🧠</span>
-          <h2 className="welcome-title">Document Intelligence</h2>
-          <p className="welcome-subtitle">
-            Upload a document and ask questions. The AI agent decides when to search your documents — and when to answer directly.
-          </p>
-          <div className="welcome-chips">
-            <button className="welcome-chip" onClick={() => handleChipClick('What does the document say about...')}>
-              📖 Ask about a document
-            </button>
-            <button className="welcome-chip" onClick={() => handleChipClick('Summarize the key findings')}>
-              📋 Summarize findings
-            </button>
-            <button className="welcome-chip" onClick={() => handleChipClick('Hello!')}>
-              👋 Say hello
-            </button>
+          <div className="welcome-icon-wrapper">
+            <IconSparkles size={36} className="icon-accent" />
           </div>
+          <h2 className="welcome-title">DocMind AI Agent</h2>
+          <p className="welcome-subtitle">
+            Upload a document, then ask anything about it.
+          </p>
         </div>
       ) : (
-        <div className="chat-messages" id="chat-messages">
+        <div className="chat-messages" ref={containerRef}>
           {messages.map((msg, i) => (
             <div key={i} className={`message message--${msg.role}`}>
               <div className="message-avatar">
-                {msg.role === 'user' ? '👤' : '🤖'}
+                {msg.role === 'user' ? (
+                  <IconUser size={14} />
+                ) : (
+                  <IconBot size={14} />
+                )}
               </div>
-              <div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minWidth: 0 }}>
                 <div className="message-bubble">{msg.content}</div>
                 {msg.role === 'assistant' && <SourceCard sources={msg.sources} />}
               </div>
             </div>
           ))}
+
+          {/* Agent thinking indicator */}
           {loading && (
             <div className="message message--assistant">
-              <div className="message-avatar">🤖</div>
-              <div className="message-bubble">
-                <TypingIndicator />
+              <div className="message-avatar">
+                <IconBot size={14} />
+              </div>
+              <div className="agent-steps">
+                {currentSteps.map((step, i) => (
+                  <div
+                    key={i}
+                    className={`agent-step ${i <= agentStep ? 'agent-step--active' : ''} ${
+                      i === agentStep ? 'agent-step--current' : ''
+                    }`}
+                  >
+                    <span className="agent-step__dot" />
+                    <span>{step}</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}
-          <div ref={messagesEndRef} />
         </div>
       )}
 
-      {/* Input */}
+      {/* Input Area */}
       <div className="chat-input-area">
-        <div className="chat-input-wrapper">
+        <div
+          className="chat-input-wrapper"
+          style={loading ? { opacity: 0.5, pointerEvents: 'none' } : {}}
+        >
           <textarea
             ref={inputRef}
             className="chat-input"
-            placeholder="Ask about your documents..."
+            placeholder={loading ? 'Agent is working…' : 'Ask about your documents…'}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             rows={1}
             disabled={loading}
-            id="chat-input"
           />
           <button
             className="chat-send-btn"
             onClick={handleSend}
             disabled={!input.trim() || loading}
-            id="send-button"
           >
-            ➤
+            {loading ? (
+              <IconLoader size={16} className="icon-spin" />
+            ) : (
+              <IconSend size={15} />
+            )}
           </button>
         </div>
       </div>
-    </div>
+    </>
   );
 }

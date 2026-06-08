@@ -1,14 +1,15 @@
 """
-MCP server — exposes `retrieve_documents` as an agent-callable tool.
-Uses SSE transport so it runs in-process with FastAPI (no subprocess).
+MCP server — exposes retrieve_documents as an agent-callable tool.
+Uses SSE transport so it runs in-process with FastAPI.
+Embeddings: Google text-embedding-004 (768-dim).
 """
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
-from config import supabase, embedder
+from .config import supabase, embedder
 
-server = Server("docmind-retrieval-server")
+server = Server("docmind-retrieval")
 
 
 @server.list_tools()
@@ -17,10 +18,9 @@ async def list_tools():
         Tool(
             name="retrieve_documents",
             description=(
-                "Search uploaded documents for content relevant to a query. "
-                "Use when the user asks a factual question that likely requires "
-                "document context. Do NOT use for greetings, general knowledge "
-                "questions, or conversational turns."
+                "Use this to search uploaded documents for factual content. "
+                "Do NOT call this for greetings, general knowledge, or "
+                "conversational messages."
             ),
             inputSchema={
                 "type": "object",
@@ -49,7 +49,7 @@ async def call_tool(name: str, arguments: dict):
     query = arguments["query"]
     top_k = arguments.get("top_k", 5)
 
-    # Embed the query
+    # Embed the query with Google text-embedding-004
     query_embedding = embedder.embed_query(query)
 
     # Call Supabase RPC — cosine similarity search
@@ -57,7 +57,7 @@ async def call_tool(name: str, arguments: dict):
         "match_documents",
         {
             "query_embedding": query_embedding,
-            "match_threshold": 0.7,
+            "match_threshold": 0.5,
             "match_count": top_k,
         },
     ).execute()
@@ -73,10 +73,12 @@ async def call_tool(name: str, arguments: dict):
 
     formatted = []
     for c in chunks:
-        page = c.get("metadata", {}).get("page", "N/A") if isinstance(c.get("metadata"), dict) else "N/A"
+        meta = c.get("metadata") or {}
+        page = meta.get("page", "N/A") if isinstance(meta, dict) else "N/A"
+        sim = c.get("similarity", 0)
         formatted.append(
             f"[Source: {c['filename']} | Page: {page} | "
-            f"Similarity: {c['similarity']:.2f}]\n{c['content']}"
+            f"Similarity: {sim:.2f}]\n{c['content']}"
         )
 
     return [TextContent(type="text", text="\n\n---\n\n".join(formatted))]

@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import toast from 'react-hot-toast';
 import { uploadDocument } from '../api/client';
+import { IconUpload, IconDownload, IconLoader } from './Icons';
 
 export default function UploadPanel({ onUploadComplete }) {
   const [uploading, setUploading] = useState(false);
@@ -39,13 +40,21 @@ export default function UploadPanel({ onUploadComplete }) {
 
   return (
     <div className="upload-section">
-      <div {...getRootProps()} className={`dropzone ${isDragActive ? 'dropzone--active' : ''}`} id="upload-dropzone">
+      <div {...getRootProps()} className={`dropzone ${isDragActive ? 'dropzone--active' : ''} ${uploading ? 'dropzone--uploading' : ''}`} id="upload-dropzone">
         <input {...getInputProps()} id="file-input" />
-        <span className="dropzone-icon">{uploading ? '⏳' : isDragActive ? '📥' : '📄'}</span>
+        <span className="dropzone-icon">
+          {uploading ? (
+            <IconLoader size={28} className="icon-spin" />
+          ) : isDragActive ? (
+            <IconDownload size={28} className="icon-accent" />
+          ) : (
+            <IconUpload size={28} className="icon-muted" />
+          )}
+        </span>
         <p className="dropzone-text">
           {uploading ? 'Processing...' : isDragActive ? 'Drop here' : <><strong>Drop a file</strong> or click</>}
         </p>
-        <p className="dropzone-hint">PDF or TXT</p>
+        <p className="dropzone-hint">PDF or TXT — up to 50 MB</p>
       </div>
       {uploading && (
         <div className="upload-progress">
