@@ -20,7 +20,6 @@ export default function SourceCard({ sources }) {
       {open && (
         <div className="sources-list">
           {sources.map((s, i) => {
-            const pct = s.similarity != null ? Math.round(s.similarity * 100) : null;
             return (
               <div key={i} className="source-card">
                 <div className="source-card-header">
@@ -39,24 +38,6 @@ export default function SourceCard({ sources }) {
                     </span>
                   )}
                 </div>
-
-                {pct != null && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '8px 0 8px' }}>
-                    <div style={{ flex: 1, height: '4px', backgroundColor: 'var(--bg-primary)', borderRadius: '2px', overflow: 'hidden' }}>
-                      <div
-                        style={{
-                          height: '100%',
-                          background: 'linear-gradient(90deg, var(--primary), var(--primary-light))',
-                          width: `${pct}%`,
-                          transition: 'width 0.4s ease',
-                        }}
-                      />
-                    </div>
-                    <span className="source-card-meta" style={{ minWidth: '50px', textAlign: 'right' }}>
-                      {pct}% match
-                    </span>
-                  </div>
-                )}
 
                 {s.chunk_preview && (
                   <p className="source-card-preview" title={s.chunk_preview}>
