@@ -161,10 +161,7 @@ export default function ChatInterface() {
 
       {/* Input Area */}
       <div className="chat-input-area">
-        <div
-          className="chat-input-wrapper"
-          style={loading ? { opacity: 0.5, pointerEvents: 'none' } : {}}
-        >
+        <div className={`chat-input-wrapper ${loading ? 'processing' : ''}`}>
           <textarea
             ref={inputRef}
             className="chat-input"
@@ -173,7 +170,6 @@ export default function ChatInterface() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             rows={1}
-            disabled={loading}
           />
           <button
             className="chat-send-btn"
