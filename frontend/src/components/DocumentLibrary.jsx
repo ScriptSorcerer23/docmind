@@ -12,6 +12,31 @@ import {
   IconTrash,
 } from './Icons';
 
+const getFileTypeMeta = (filename) => {
+  const ext = filename.split('.').pop().toLowerCase();
+  let color = '124, 58, 237'; // default purple/accent
+  let label = ext.toUpperCase();
+
+  if (ext === 'pdf') {
+    color = '239, 68, 68'; // red
+  } else if (['docx', 'doc'].includes(ext)) {
+    color = '59, 130, 246'; // blue
+  } else if (ext === 'txt') {
+    color = '148, 163, 184'; // slate/gray
+  } else if (ext === 'csv') {
+    color = '16, 185, 129'; // green
+  }
+  return {
+    accentColor: `rgb(${color})`,
+    cardBgFrom: `rgba(${color}, 0.08)`,
+    cardBgTo: `rgba(${color}, 0.06)`,
+    cardBgHover: `rgba(${color}, 0.12)`,
+    badgeBg: `rgba(${color}, 0.15)`,
+    badgeText: `rgb(${color})`,
+    label,
+  };
+};
+
 export default function DocumentLibrary({ refreshKey, onUploadComplete }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -154,49 +179,58 @@ export default function DocumentLibrary({ refreshKey, onUploadComplete }) {
             <p>No documents uploaded yet.<br />Drop a file to get started.</p>
           </div>
         ) : (
-          docs.map((doc) => (
-            <div key={doc.id} className="doc-item">
-              <div className="doc-item-icon">
-                {doc.filename.toLowerCase().endsWith('.pdf') ? (
-                  <IconFilePdf size={16} className="icon-accent" />
-                ) : (
-                  <IconFileText size={16} className="icon-accent" />
-                )}
-              </div>
-              <div className="doc-item-info">
-                <p className="doc-item-name" title={doc.filename}>
-                  {doc.filename}
-                </p>
-                <p className="doc-item-date">{fmtDate(doc.created_at)}</p>
-              </div>
-              <button
-                type="button"
-                className="doc-item-delete"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  if (window.confirm(`Delete ${doc.filename}?`)) {
-                    deleteDocument(doc.id)
-                      .then(() => {
-                        fetchDocs();
-                        toast.success('Document deleted');
-                      })
-                      .catch(() => toast.error('Failed to delete document'));
-                  }
-                }}
-                title="Delete Document"
+          docs.map((doc) => {
+            const meta = getFileTypeMeta(doc.filename);
+            return (
+              <div
+                key={doc.id}
+                className="doc-item"
                 style={{
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: '4px',
-                  color: 'inherit'
+                  '--card-accent': meta.accentColor,
+                  '--card-bg-from': meta.cardBgFrom,
+                  '--card-bg-to': meta.cardBgTo,
+                  '--card-bg-hover': meta.cardBgHover,
                 }}
               >
-                🗑
-              </button>
-            </div>
-          ))
+                <div className="doc-item-top">
+                  <span
+                    className="doc-type-badge"
+                    style={{
+                      backgroundColor: meta.badgeBg,
+                      color: meta.badgeText,
+                    }}
+                  >
+                    {meta.label}
+                  </span>
+                  <button
+                    type="button"
+                    className="doc-item-delete"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      if (window.confirm(`Delete ${doc.filename}?`)) {
+                        deleteDocument(doc.id)
+                          .then(() => {
+                            fetchDocs();
+                            toast.success('Document deleted');
+                          })
+                          .catch(() => toast.error('Failed to delete document'));
+                      }
+                    }}
+                    title="Delete Document"
+                  >
+                    🗑
+                  </button>
+                </div>
+                <div className="doc-item-info">
+                  <p className="doc-item-name" title={doc.filename}>
+                    {doc.filename}
+                  </p>
+                  <p className="doc-item-date">{fmtDate(doc.created_at)}</p>
+                </div>
+              </div>
+            );
+          })
         )}
       </div>
     </>

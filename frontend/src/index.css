@@ -306,12 +306,16 @@ body {
 
 .doc-item {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 4px;
   padding: 10px 12px;
-  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, var(--card-bg-from), var(--card-bg-to));
+  border: 1px solid var(--border-subtle);
+  border-left: 1px solid var(--card-accent);
+  border-radius: 8px;
   transition: all var(--transition-fast);
   cursor: default;
+  margin-bottom: 8px;
   animation: slideIn var(--transition-base) ease-out;
 }
 
@@ -327,38 +331,49 @@ body {
 }
 
 .doc-item:hover {
-  background: var(--bg-hover);
+  background: var(--card-bg-hover);
+  border: 2px solid var(--card-accent);
+  padding: 9px 11px;
 }
 
-.doc-item-icon {
+.doc-item-top {
   display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.doc-type-badge {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
-  background: rgba(0, 206, 201, 0.08);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .doc-item-info {
-  flex: 1;
+  width: 100%;
   min-width: 0;
 }
 
 .doc-item-name {
-  font-size: 0.8rem;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  width: 100%;
 }
 
 .doc-item-date {
-  font-size: 0.66rem;
+  font-size: 11px;
   color: var(--text-muted);
-  margin-top: 1px;
+  margin-top: 2px;
 }
 
 .doc-item-delete {
@@ -367,13 +382,15 @@ body {
   border: none;
   color: var(--danger);
   cursor: pointer;
-  padding: 6px;
+  padding: 4px;
   border-radius: var(--radius-sm);
   transition: all var(--transition-fast);
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  height: 20px;
+  width: 20px;
 }
 
 .doc-item:hover .doc-item-delete {
