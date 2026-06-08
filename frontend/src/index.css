@@ -30,6 +30,7 @@
   --bg-tertiary: #161622;
   --bg-elevated: #1a1a26;
   --bg-hover: #1e1e2e;
+  --bg-pattern-dot: rgba(255, 255, 255, 0.07);
 
   /* Glass */
   --glass-bg: rgba(18, 18, 26, 0.8);
@@ -66,6 +67,10 @@
   /* Layout */
   --sidebar-width: 280px;
   --header-height: 56px;
+}
+
+body.light, [data-theme="light"] {
+  --bg-pattern-dot: rgba(0, 0, 0, 0.035);
 }
 
 /* ── Reset & Base ──────────────────────────────────────────────── */
@@ -508,6 +513,22 @@ body {
   gap: 20px;
   position: relative;
   z-index: 1;
+}
+
+.chat-messages::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: -1;
+  opacity: 0.045;
+  background-image: radial-gradient(circle, var(--bg-pattern-dot) 1px, transparent 1px);
+  background-size: 24px 24px;
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 80px), transparent 100%);
+  mask-image: linear-gradient(to bottom, black calc(100% - 80px), transparent 100%);
 }
 
 .message {
