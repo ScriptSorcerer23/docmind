@@ -7,7 +7,7 @@ Embeddings: Google text-embedding-004 (768-dim).
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
-from .config import supabase, embedder
+from config import supabase, embedder
 
 server = Server("docmind-retrieval")
 

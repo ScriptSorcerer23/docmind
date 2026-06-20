@@ -15,11 +15,15 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import google.generativeai as genai
-from crewai import Agent, Task, Crew
-from crewai.tools import tool
 
-from .config import GOOGLE_API_KEY, GROQ_API_KEY, supabase, embedder
-from .models import Source
+def tool(name):
+    def decorator(fn):
+        fn.func = fn
+        return fn
+    return decorator
+
+from config import GOOGLE_API_KEY, GROQ_API_KEY, supabase, embedder
+from models import Source
 
 # Configure Gemini client for helper tools
 genai.configure(api_key=GOOGLE_API_KEY)
@@ -198,7 +202,7 @@ def get_crew_response(
     mcp_url: str = None,
 ) -> Tuple[str, List[Source]]:
     try:
-        return _run_crew(message, conversation_history, llm="gemini/gemini-2.5-flash")
+        return _run_with_groq(message, conversation_history)
     except Exception as e:
         if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "quota" in str(e).lower():
             print("Gemini quota hit — falling back to Groq")
@@ -217,7 +221,7 @@ def _run_with_groq(
     import litellm
     import json
     import re
-    from .models import Source
+    from models import Source
 
     tools = [
         {

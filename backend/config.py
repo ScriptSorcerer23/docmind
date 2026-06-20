@@ -23,6 +23,7 @@ os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 embedder = GoogleGenerativeAIEmbeddings(
-    model="models/gemini-embedding-001",
-    google_api_key=GOOGLE_API_KEY
+    model="models/gemini-embedding-2",
+    google_api_key=GOOGLE_API_KEY,
+    output_dimensionality=768,
 )

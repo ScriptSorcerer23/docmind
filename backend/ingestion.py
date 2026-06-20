@@ -10,7 +10,7 @@ from typing import Tuple
 from langchain_community.document_loaders import PyPDFLoader, PyMuPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from .config import supabase, embedder
+from config import supabase, embedder
 
 
 # ── Helpers ────────────────────────────────────────────────────────

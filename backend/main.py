@@ -13,30 +13,43 @@ import logging
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Security, status
+from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from mcp.server.sse import SseServerTransport
 
-from .config import supabase
-from .models import (
+from config import supabase
+from models import (
     ChatRequest,
     ChatResponse,
     UploadResponse,
     Source,
 )
-from .ingestion import ingest_document
-from .mcp_server import server as mcp_server_instance
-from .agent import get_crew_response
+from ingestion import ingest_document
+from mcp_server import server as mcp_server_instance
+from agent import get_crew_response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ── API Key Verification ───────────────────────────────────────────
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def verify_api_key(api_key: str = Security(api_key_header)):
+    if not api_key or api_key != os.getenv("API_SECRET_KEY"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or missing API key",
+        )
+    return api_key
 
 # ── App ────────────────────────────────────────────────────────────
 app = FastAPI(
     title="DocMind",
     description="Agent-native document intelligence powered by MCP + CrewAI.",
     version="1.0.0",
+    dependencies=[Depends(verify_api_key)],
 )
 
 # ── CORS ───────────────────────────────────────────────────────────
