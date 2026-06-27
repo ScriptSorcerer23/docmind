@@ -79,7 +79,16 @@ def ingest_document(file_path: str, filename: str) -> Tuple[str, int, bool]:
         traceback.print_exc()
         raise
 
-    existing = supabase.table("documents").select("id").eq("file_hash", file_hash).execute()
+    # 1b. Look up whether this file was already ingested
+    try:
+        print(f"[INGEST] Checking Supabase 'documents' table for existing file_hash...")
+        existing = supabase.table("documents").select("id").eq("file_hash", file_hash).execute()
+        print(f"[INGEST] Existing-document lookup returned {len(existing.data) if existing.data else 0} row(s)")
+    except Exception:
+        print("[INGEST] ERROR checking for existing document (file_hash lookup failed):")
+        traceback.print_exc()
+        raise
+
     if existing.data:
         doc_id = existing.data[0]["id"]
         # Check if chunks actually exist
