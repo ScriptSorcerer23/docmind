@@ -315,7 +315,11 @@ def _run_with_groq(
                 "- If the user asks to compare two or more documents — call compare_documents with a "
                 "comma-separated list of filenames.\n"
                 "- For greetings and pure general knowledge (capitals, math, definitions) — answer directly without tools.\n"
-                "When you use retrieved content, cite the source filename and page number in your answer."
+                "When you use retrieved content, cite the source filename and page number in your answer.\n"
+                "CRITICAL: When a tool returns specific information (filenames, dates, content), you MUST include "
+                "those exact specifics in your final answer to the user. Never reply with a vague summary like "
+                "'these are the available documents' without actually naming them. If list_available_documents "
+                "returns a list of filenames, list every one of those filenames by name in your reply."
             )
         }
     ]
