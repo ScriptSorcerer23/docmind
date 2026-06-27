@@ -13,7 +13,7 @@ import logging
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import supabase
@@ -28,6 +28,19 @@ from agent import get_crew_response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+MAX_DOCUMENTS_PER_SESSION = 3
+
+
+def require_session_id(x_session_id: str = Header(..., alias="X-Session-Id")) -> str:
+    """Every request must carry a client-generated session id.
+    This is the sole privacy boundary between concurrent users — each session
+    only ever sees/touches documents tagged with its own session_id.
+    """
+    if not x_session_id or not x_session_id.strip():
+        raise HTTPException(status_code=400, detail="Missing X-Session-Id header.")
+    return x_session_id.strip()
+
 
 # ── App ────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -54,8 +67,13 @@ async def health():
 
 # ── Upload ─────────────────────────────────────────────────────────
 @app.post("/upload", response_model=UploadResponse)
-async def upload_document(file: UploadFile = File(...)):
-    """Upload a PDF or TXT file for ingestion into the vector store."""
+async def upload_document(
+    file: UploadFile = File(...),
+    session_id: str = Depends(require_session_id),
+):
+    """Upload a PDF or TXT file for ingestion into the vector store.
+    Scoped to the caller's session — max MAX_DOCUMENTS_PER_SESSION docs per session.
+    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
 
@@ -64,6 +82,23 @@ async def upload_document(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type. Allowed: {', '.join(allowed)}",
+        )
+
+    # Enforce per-session document cap before doing any work
+    existing_count = (
+        supabase.table("documents")
+        .select("id", count="exact")
+        .eq("session_id", session_id)
+        .execute()
+    )
+    current_total = existing_count.count or 0
+    if current_total >= MAX_DOCUMENTS_PER_SESSION:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"You've reached the limit of {MAX_DOCUMENTS_PER_SESSION} documents "
+                f"for this session. Please delete one before uploading another."
+            ),
         )
 
     suffix = os.path.splitext(file.filename)[1]
@@ -76,7 +111,7 @@ async def upload_document(file: UploadFile = File(...)):
             f.write(content)
 
         doc_id, chunk_count, already_existed = await asyncio.to_thread(
-            ingest_document, tmp_path, file.filename
+            ingest_document, tmp_path, file.filename, session_id
         )
 
         return UploadResponse(
@@ -99,11 +134,12 @@ async def upload_document(file: UploadFile = File(...)):
 
 # ── Document Library ───────────────────────────────────────────────
 @app.get("/documents")
-async def list_documents():
-    """Return all uploaded documents."""
+async def list_documents(session_id: str = Depends(require_session_id)):
+    """Return documents belonging to the caller's session only."""
     result = (
         supabase.table("documents")
         .select("id, filename, created_at")
+        .eq("session_id", session_id)
         .order("created_at", desc=True)
         .execute()
     )
@@ -111,26 +147,31 @@ async def list_documents():
 
 
 @app.delete("/documents/{doc_id}")
-async def delete_document(doc_id: str):
-    """Delete a document and its chunks (cascade via FK)."""
+async def delete_document(doc_id: str, session_id: str = Depends(require_session_id)):
+    """Delete a document and its chunks (cascade via FK).
+    Only the owning session can delete its own documents.
+    """
     check = (
         supabase.table("documents")
         .select("id")
         .eq("id", doc_id)
+        .eq("session_id", session_id)
         .execute()
     )
     if not check.data:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    supabase.table("documents").delete().eq("id", doc_id).execute()
+    supabase.table("documents").delete().eq("id", doc_id).eq("session_id", session_id).execute()
     return {"deleted": True, "doc_id": doc_id}
 
 
 # ── Chat ───────────────────────────────────────────────────────────
 @app.post("/chat")
-def chat(request: ChatRequest):
+def chat(request: ChatRequest, session_id: str = Depends(require_session_id)):
     try:
-        answer, sources = get_crew_response(request.message, request.conversation_history)
+        answer, sources = get_crew_response(
+            request.message, request.conversation_history, session_id=session_id
+        )
         return ChatResponse(answer=answer, sources=sources)
     except Exception as e:
         import traceback

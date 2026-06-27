@@ -34,9 +34,9 @@ logger = logging.getLogger(__name__)
 # ── Direct Agentic Tools ───────────────────────────────────────────
 
 @tool("retrieve_documents")
-def retrieve_documents(query: str, top_k: int = 5) -> str:
+def retrieve_documents(query: str, session_id: str, top_k: int = 5) -> str:
     """
-    Search uploaded documents for relevant content.
+    Search uploaded documents for relevant content, scoped to the caller's session.
     ALWAYS use this tool when the user asks about a specific person, their skills, experience,
     background, or any factual information that could be in an uploaded document.
     Do NOT answer questions about named individuals from general knowledge — always search documents first.
@@ -45,13 +45,14 @@ def retrieve_documents(query: str, top_k: int = 5) -> str:
         # Embed the query with Google text-embedding-004 (768-dim)
         query_embedding = embedder.embed_query(query)
 
-        # Call Supabase RPC — cosine similarity search
+        # Call Supabase RPC — cosine similarity search, scoped to this session only
         result = supabase.rpc(
             "match_documents",
             {
                 "query_embedding": query_embedding,
                 "match_threshold": 0.5,
                 "match_count": top_k,
+                "filter_session_id": session_id,
             },
         ).execute()
 
@@ -76,12 +77,13 @@ def retrieve_documents(query: str, top_k: int = 5) -> str:
 
 
 @tool("list_available_documents")
-def list_available_documents(placeholder: str = None) -> str:
-    """List all uploaded documents in the knowledge base. ALWAYS call this when the user asks what documents are available. The placeholder argument is unused — pass an empty string or omit it."""
+def list_available_documents(session_id: str, placeholder: str = None) -> str:
+    """List documents uploaded in the caller's session. ALWAYS call this when the user asks what documents are available. The placeholder argument is unused — pass an empty string or omit it."""
     try:
         result = (
             supabase.table("documents")
             .select("filename, created_at")
+            .eq("session_id", session_id)
             .order("created_at", desc=True)
             .execute()
         )
@@ -96,11 +98,17 @@ def list_available_documents(placeholder: str = None) -> str:
 
 
 @tool("summarize_document")
-def summarize_document(filename: str) -> str:
-    """Generate a summary of a specific document by its filename."""
+def summarize_document(filename: str, session_id: str) -> str:
+    """Generate a summary of a specific document by its filename, within the caller's session."""
     try:
-        # Find document id
-        doc_res = supabase.table("documents").select("id").eq("filename", filename).execute()
+        # Find document id, scoped to this session
+        doc_res = (
+            supabase.table("documents")
+            .select("id")
+            .eq("filename", filename)
+            .eq("session_id", session_id)
+            .execute()
+        )
         if not doc_res.data:
             return f"Document '{filename}' not found."
         
@@ -135,7 +143,7 @@ def summarize_document(filename: str) -> str:
             f"Content:\n{full_text}"
         )
         
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-3.5-flash")
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -144,8 +152,8 @@ def summarize_document(filename: str) -> str:
 
 
 @tool("compare_documents")
-def compare_documents(filenames: str) -> str:
-    """Compare the contents, key points, or findings of two or more documents.
+def compare_documents(filenames: str, session_id: str) -> str:
+    """Compare the contents, key points, or findings of two or more documents within the caller's session.
     The input should be a comma-separated string of filenames (e.g., 'report_q1.pdf, report_q2.pdf').
     """
     try:
@@ -155,7 +163,13 @@ def compare_documents(filenames: str) -> str:
             
         comparison_data = []
         for filename in names:
-            doc_res = supabase.table("documents").select("id").eq("filename", filename).execute()
+            doc_res = (
+                supabase.table("documents")
+                .select("id")
+                .eq("filename", filename)
+                .eq("session_id", session_id)
+                .execute()
+            )
             if not doc_res.data:
                 return f"Document '{filename}' not found for comparison."
             doc_id = doc_res.data[0]["id"]
@@ -186,7 +200,7 @@ def compare_documents(filenames: str) -> str:
         for i, (fname, text) in enumerate(comparison_data, 1):
             prompt += f"Document {i}: {fname}\nContent Preview:\n{text[:10000]}\n\n---\n\n"
             
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-3.5-flash")
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -199,20 +213,22 @@ def compare_documents(filenames: str) -> str:
 def get_crew_response(
     message: str,
     conversation_history: list,
+    session_id: str,
     mcp_url: str = None,
 ) -> Tuple[str, List[Source]]:
     try:
-        return _run_with_groq(message, conversation_history)
+        return _run_with_groq(message, conversation_history, session_id)
     except Exception as e:
         if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "quota" in str(e).lower():
             print("Gemini quota hit — falling back to Groq")
-            return _run_with_groq(message, conversation_history)
+            return _run_with_groq(message, conversation_history, session_id)
         raise
 
 
 def _run_with_groq(
     message: str,
     conversation_history: list,
+    session_id: str,
 ) -> Tuple[str, List[Source]]:
     """Run via Groq LLM (llama-3.1-8b-instant) directly using litellm.
     Supports all four tools: retrieve_documents, list_available_documents,
@@ -335,7 +351,7 @@ def _run_with_groq(
                 query = args.get("query")
                 top_k = args.get("top_k", 5)
                 fn = getattr(retrieve_documents, "func", retrieve_documents)
-                tool_result = fn(query=query, top_k=top_k)
+                tool_result = fn(query=query, top_k=top_k, session_id=session_id)
 
                 # Parse sources from the tool result
                 source_pattern = re.compile(
@@ -354,17 +370,17 @@ def _run_with_groq(
 
             elif fn_name == "list_available_documents":
                 fn = getattr(list_available_documents, "func", list_available_documents)
-                tool_result = fn()
+                tool_result = fn(session_id=session_id)
 
             elif fn_name == "summarize_document":
                 filename = args.get("filename", "")
                 fn = getattr(summarize_document, "func", summarize_document)
-                tool_result = fn(filename=filename)
+                tool_result = fn(filename=filename, session_id=session_id)
 
             elif fn_name == "compare_documents":
                 filenames = args.get("filenames", "")
                 fn = getattr(compare_documents, "func", compare_documents)
-                tool_result = fn(filenames=filenames)
+                tool_result = fn(filenames=filenames, session_id=session_id)
 
             else:
                 tool_result = f"Unknown tool: {fn_name}"

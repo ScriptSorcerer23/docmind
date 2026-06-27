@@ -59,9 +59,9 @@ def check_existing_document(file_hash: str) -> dict | None:
 
 # ── Main Ingestion ─────────────────────────────────────────────────
 
-def ingest_document(file_path: str, filename: str) -> Tuple[str, int, bool]:
+def ingest_document(file_path: str, filename: str, session_id: str) -> Tuple[str, int, bool]:
     """
-    Full ingestion pipeline.
+    Full ingestion pipeline, scoped to the uploading session.
 
     Returns:
         (doc_id, chunk_count, already_existed)
@@ -79,10 +79,16 @@ def ingest_document(file_path: str, filename: str) -> Tuple[str, int, bool]:
         traceback.print_exc()
         raise
 
-    # 1b. Look up whether this file was already ingested
+    # 1b. Look up whether this exact file was already ingested by THIS session
     try:
-        print(f"[INGEST] Checking Supabase 'documents' table for existing file_hash...")
-        existing = supabase.table("documents").select("id").eq("file_hash", file_hash).execute()
+        print(f"[INGEST] Checking Supabase 'documents' table for existing file_hash in this session...")
+        existing = (
+            supabase.table("documents")
+            .select("id")
+            .eq("file_hash", file_hash)
+            .eq("session_id", session_id)
+            .execute()
+        )
         print(f"[INGEST] Existing-document lookup returned {len(existing.data) if existing.data else 0} row(s)")
     except Exception:
         print("[INGEST] ERROR checking for existing document (file_hash lookup failed):")
@@ -101,12 +107,12 @@ def ingest_document(file_path: str, filename: str) -> Tuple[str, int, bool]:
             # Delete the stale document record and re-ingest
             supabase.table("documents").delete().eq("id", doc_id).execute()
 
-    # 2. Register document in Supabase
+    # 2. Register document in Supabase, tagged with the owning session
     try:
         print(f"[INGEST] Registering document in 'documents' table...")
         doc_row = (
             supabase.table("documents")
-            .insert({"filename": filename, "file_hash": file_hash})
+            .insert({"filename": filename, "file_hash": file_hash, "session_id": session_id})
             .execute()
         )
         doc_id = doc_row.data[0]["id"]
