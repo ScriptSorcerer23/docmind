@@ -1,5 +1,5 @@
 """
-FastAPI application — routes, MCP SSE mount, CORS.
+FastAPI application — routes, CORS.
 """
 
 import os
@@ -13,11 +13,8 @@ import logging
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Security, status
-from fastapi.security import APIKeyHeader
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.requests import Request
-from mcp.server.sse import SseServerTransport
 
 from config import supabase
 from models import (
@@ -27,29 +24,16 @@ from models import (
     Source,
 )
 from ingestion import ingest_document
-from mcp_server import server as mcp_server_instance
 from agent import get_crew_response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── API Key Verification ───────────────────────────────────────────
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-async def verify_api_key(api_key: str = Security(api_key_header)):
-    if not api_key or api_key != os.getenv("API_SECRET_KEY"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid or missing API key",
-        )
-    return api_key
-
 # ── App ────────────────────────────────────────────────────────────
 app = FastAPI(
     title="DocMind",
-    description="Agent-native document intelligence powered by MCP + CrewAI.",
+    description="Agent-native document intelligence powered by CrewAI.",
     version="1.0.0",
-    dependencies=[Depends(verify_api_key)],
 )
 
 # ── CORS ───────────────────────────────────────────────────────────
@@ -60,26 +44,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ── MCP SSE Transport ─────────────────────────────────────────────
-sse_transport = SseServerTransport("/mcp/messages")
-
-
-@app.get("/mcp/sse")
-async def mcp_sse_endpoint(request: Request):
-    """SSE endpoint — MCP clients connect here."""
-    async with sse_transport.connect_sse(
-        request.scope, request.receive, request._send
-    ) as (read_stream, write_stream):
-        await mcp_server_instance.run(
-            read_stream,
-            write_stream,
-            mcp_server_instance.create_initialization_options(),
-        )
-
-
-# Mount the POST handler so MCP tool calls can be received
-app.mount("/mcp/messages", sse_transport.handle_post_message)
 
 
 # ── Health ─────────────────────────────────────────────────────────

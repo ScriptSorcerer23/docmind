@@ -3,6 +3,9 @@ import axios from 'axios';
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000',
   timeout: 300_000, // 5 min — agent can be slow
+  headers: {
+    'X-API-Key': import.meta.env.VITE_API_SECRET_KEY,
+  },
 });
 
 export async function uploadDocument(file, onProgress) {
