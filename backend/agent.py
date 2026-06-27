@@ -135,7 +135,7 @@ def summarize_document(filename: str) -> str:
             f"Content:\n{full_text}"
         )
         
-        model = genai.GenerativeModel("gemini-3.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -186,7 +186,7 @@ def compare_documents(filenames: str) -> str:
         for i, (fname, text) in enumerate(comparison_data, 1):
             prompt += f"Document {i}: {fname}\nContent Preview:\n{text[:10000]}\n\n---\n\n"
             
-        model = genai.GenerativeModel("gemini-3.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -215,7 +215,8 @@ def _run_with_groq(
     conversation_history: list,
 ) -> Tuple[str, List[Source]]:
     """Run via Groq LLM (llama-3.1-8b-instant) directly using litellm.
-    Supports retrieve_documents only and gracefully degrades on others.
+    Supports all four tools: retrieve_documents, list_available_documents,
+    summarize_document, and compare_documents.
     """
     print("[GROQ] _run_with_groq executed")
     import litellm
@@ -238,6 +239,49 @@ def _run_with_groq(
                     "required": ["query"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_available_documents",
+                "description": "List all uploaded documents in the knowledge base. Use this when the user asks what documents/files are available or uploaded.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "summarize_document",
+                "description": "Generate a summary of a specific uploaded document, identified by its exact filename.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "description": "The exact filename of the document to summarize"}
+                    },
+                    "required": ["filename"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "compare_documents",
+                "description": "Compare the contents of two or more uploaded documents.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filenames": {
+                            "type": "string",
+                            "description": "Comma-separated list of exact filenames to compare, e.g. 'report_q1.pdf, report_q2.pdf'"
+                        }
+                    },
+                    "required": ["filenames"]
+                }
+            }
         }
     ]
 
@@ -245,10 +289,17 @@ def _run_with_groq(
         {
             "role": "system",
             "content": (
-                "You are a Document Intelligence Analyst. Use retrieve_documents to answer questions about uploaded documents. "
-                "For greetings and general knowledge, answer directly without tools. "
-                "IMPORTANT: If the user asks to list documents, summarize documents, or compare documents, "
-                "you MUST respond exactly with: 'The full agent is temporarily unavailable. Please try again shortly.'"
+                "You are a Document Intelligence Analyst with four tools: "
+                "retrieve_documents, list_available_documents, summarize_document, and compare_documents.\n"
+                "- For ANY question about a person's skills, experience, background, education, or work, "
+                "or any factual question that could be answered by an uploaded document — "
+                "ALWAYS call retrieve_documents first. Never answer from general knowledge about people.\n"
+                "- If the user asks what documents/files are available or uploaded — call list_available_documents.\n"
+                "- If the user asks to summarize a specific document — call summarize_document with its filename.\n"
+                "- If the user asks to compare two or more documents — call compare_documents with a "
+                "comma-separated list of filenames.\n"
+                "- For greetings and pure general knowledge (capitals, math, definitions) — answer directly without tools.\n"
+                "When you use retrieved content, cite the source filename and page number in your answer."
             )
         }
     ]
@@ -274,15 +325,18 @@ def _run_with_groq(
     if tool_calls:
         messages.append(response_message)
         for tool_call in tool_calls:
-            if tool_call.function.name == "retrieve_documents":
+            fn_name = tool_call.function.name
+            try:
                 args = json.loads(tool_call.function.arguments)
+            except json.JSONDecodeError:
+                args = {}
+
+            if fn_name == "retrieve_documents":
                 query = args.get("query")
                 top_k = args.get("top_k", 5)
-                
-                # Execute tool retrieve_documents
                 fn = getattr(retrieve_documents, "func", retrieve_documents)
                 tool_result = fn(query=query, top_k=top_k)
-                
+
                 # Parse sources from the tool result
                 source_pattern = re.compile(
                     r"\[Source:\s*(.+?)\s*\|\s*Page:\s*(\S+)\s*\|\s*Similarity:\s*([\d.]+)\]"
@@ -297,13 +351,30 @@ def _run_with_groq(
                             similarity=float(m.group(3)),
                         )
                     )
-                
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "name": "retrieve_documents",
-                    "content": tool_result
-                })
+
+            elif fn_name == "list_available_documents":
+                fn = getattr(list_available_documents, "func", list_available_documents)
+                tool_result = fn()
+
+            elif fn_name == "summarize_document":
+                filename = args.get("filename", "")
+                fn = getattr(summarize_document, "func", summarize_document)
+                tool_result = fn(filename=filename)
+
+            elif fn_name == "compare_documents":
+                filenames = args.get("filenames", "")
+                fn = getattr(compare_documents, "func", compare_documents)
+                tool_result = fn(filenames=filenames)
+
+            else:
+                tool_result = f"Unknown tool: {fn_name}"
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": fn_name,
+                "content": tool_result
+            })
         
         # Get final response from LLM
         final_response = litellm.completion(
