@@ -235,7 +235,8 @@ def _run_with_groq(
     conversation_history: list,
     session_id: str,
 ) -> Tuple[str, List[Source]]:
-    """Run via Groq LLM (llama-3.1-8b-instant) directly using litellm.
+    """Run via Groq LLM (configured in GROQ_MODEL) using litellm, with a
+    bounded agentic loop supporting chained/multi-step tool calls.
     Supports all four tools: retrieve_documents, list_available_documents,
     summarize_document, and compare_documents.
     """
@@ -334,21 +335,27 @@ def _run_with_groq(
         messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": message})
 
-    # Call litellm completion
-    response = litellm.completion(
-        model=GROQ_MODEL,
-        messages=messages,
-        tools=tools,
-        tool_choice="auto",
-        temperature=0.0
-    )
-
-    response_message = response.choices[0].message
-    tool_calls = getattr(response_message, "tool_calls", None)
+    MAX_TOOL_ITERATIONS = 5  # safety cap against runaway/looping tool calls
 
     sources = []
-    if tool_calls:
+    for iteration in range(MAX_TOOL_ITERATIONS):
+        response = litellm.completion(
+            model=GROQ_MODEL,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+            temperature=0.0
+        )
+
+        response_message = response.choices[0].message
+        tool_calls = getattr(response_message, "tool_calls", None)
+
+        if not tool_calls:
+            # Model is done reasoning/calling tools — this is the final answer.
+            return response_message.content, sources
+
         messages.append(response_message)
+
         for tool_call in tool_calls:
             fn_name = tool_call.function.name
             try:
@@ -400,18 +407,22 @@ def _run_with_groq(
                 "name": fn_name,
                 "content": tool_result
             })
-        
-        # Get final response from LLM
-        final_response = litellm.completion(
-            model=GROQ_MODEL,
-            messages=messages,
-            temperature=0.0
-        )
-        final_text = final_response.choices[0].message.content
-        return final_text, sources
-    else:
-        final_text = response_message.content
-        return final_text, []
+
+        # Loop back: give the model the new tool results and let it decide
+        # whether it needs another tool call or is ready to answer.
+
+    # Safety net: hit MAX_TOOL_ITERATIONS without a final answer. Force one
+    # last call with tool_choice="none" so the model must respond in text
+    # using whatever it has gathered so far, rather than failing the request.
+    logger.warning("Hit MAX_TOOL_ITERATIONS (%d) without a final answer — forcing text response.", MAX_TOOL_ITERATIONS)
+    final_response = litellm.completion(
+        model=GROQ_MODEL,
+        messages=messages,
+        tools=tools,
+        tool_choice="none",
+        temperature=0.0
+    )
+    return final_response.choices[0].message.content, sources
 
 
 def _run_crew(
