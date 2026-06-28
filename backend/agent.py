@@ -50,12 +50,15 @@ def retrieve_documents(query: str, session_id: str, top_k: int = 5) -> str:
         # Embed the query with Google text-embedding-004 (768-dim)
         query_embedding = embedder.embed_query(query)
 
-        # Call Supabase RPC — cosine similarity search, scoped to this session only
+        # Call Supabase RPC — cosine similarity search, scoped to this session only.
+        # Threshold lowered from 0.5 to 0.4: a slightly noisy query (e.g. extracted
+        # from a rambling message) can otherwise miss a real match entirely. Low
+        # risk at small corpus sizes since there's little room for false positives.
         result = supabase.rpc(
             "match_documents",
             {
                 "query_embedding": query_embedding,
-                "match_threshold": 0.5,
+                "match_threshold": 0.4,
                 "match_count": top_k,
                 "filter_session_id": session_id,
             },
@@ -325,7 +328,14 @@ def _run_with_groq(
                 "CRITICAL: When a tool returns specific information (filenames, dates, content), you MUST include "
                 "those exact specifics in your final answer to the user. Never reply with a vague summary like "
                 "'these are the available documents' without actually naming them. If list_available_documents "
-                "returns a list of filenames, list every one of those filenames by name in your reply."
+                "returns a list of filenames, list every one of those filenames by name in your reply.\n"
+                "QUERY EXTRACTION: when calling retrieve_documents, the `query` argument must be a short, clean "
+                "search phrase containing only the core subject and what's being asked about — strip out greetings, "
+                "small talk, filler, or unrelated context the user included before/after the actual question. "
+                "For example, if the user says 'so work has been crazy lately, anyway quick question, what's the "
+                "budget for Project Phoenix, let me know whenever', the query should be 'Project Phoenix budget', "
+                "not the full sentence. A noisy query produces a worse embedding match and can cause real answers "
+                "to be missed."
             )
         }
     ]
