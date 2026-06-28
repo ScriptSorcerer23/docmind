@@ -1,4 +1,3 @@
-```markdown
 # DocMind
 
 **Live Deployment:** https://docmind1.netlify.app/
