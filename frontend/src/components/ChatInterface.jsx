@@ -1,105 +1,69 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { streamMessage } from '../api/client';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import SourceCard from './SourceCard';
 import { IconUser, IconBot, IconSend, IconLoader, IconSparkles } from './Icons';
 import toast from 'react-hot-toast';
 
-const parseMessageContent = (content) => {
-  if (!content) return null;
-
-  const parts = content.split(/(```[\s\S]*?```)/g);
-
-  const testRegex = new RegExp(
-    '^' +
-    '(?:' +
-    '[\\w\\.\\-\\+\\/\\\\]*[/\\\\][\\w\\-\\+\\/\\\\]+\\.[a-zA-Z0-9]{2,5}' +
-    '|' +
-    'v\\d+\\.\\d+\\.\\d+(?:-\\w+)?' +
-    '|' +
-    '[a-zA-Z0-9]{17,}' +
-    '|' +
-    '(?:gpt|claude|llama|gemini|mixtral|deepseek)-\\w+(?:-\\w+)*' +
-    ')' +
-    '$'
-  );
-
-  const techRegex = new RegExp(
-    '(' +
-    '[\\w\\.\\-\\+\\/\\\\]*[/\\\\][\\w\\-\\+\\/\\\\]+\\.[a-zA-Z0-9]{2,5}' +
-    '|' +
-    '\\bv\\d+\\.\\d+\\.\\d+(?:-\\w+)?\\b' +
-    '|' +
-    '\\b[a-zA-Z0-9]{17,}\\b' +
-    '|' +
-    '\\b(?:gpt|claude|llama|gemini|mixtral|deepseek)-\\w+(?:-\\w+)*\\b' +
-    ')',
-    'g'
-  );
-
-  return parts.map((part, index) => {
-    if (part.startsWith('```') && part.endsWith('```')) {
-      const codeLines = part.slice(3, -3).trim().split('\n');
-      const firstLine = codeLines[0];
-      const hasLang = /^[a-zA-Z0-9_-]+$/.test(firstLine);
-      const codeText = (hasLang ? codeLines.slice(1) : codeLines).join('\n');
-
-      return (
-        <pre key={index} className="system-output-block">
-          <code>{codeText}</code>
-        </pre>
-      );
-    }
-
-    const lines = part.split('\n');
-    return (
-      <div key={index} className="message-paragraph">
-        {lines.map((line, lineIdx) => {
-          const trimmedLine = line.trim();
-
-          if (trimmedLine.startsWith('>')) {
-            const systemText = line.substring(line.indexOf('>') + 1);
-            return (
-              <div key={lineIdx} className="system-output-line">
-                {systemText}
-              </div>
-            );
-          }
-
-          const inlineParts = line.split(/(`[^`\n]+`)/g);
-
-          const parsedLineContent = inlineParts.map((subPart, subIdx) => {
-            if (subPart.startsWith('`') && subPart.endsWith('`')) {
-              const inlineCode = subPart.slice(1, -1);
-              return (
-                <code key={subIdx} className="inline-code-span">
-                  {inlineCode}
-                </code>
-              );
-            }
-
-            const techParts = subPart.split(techRegex);
-            return techParts.map((techPart, techIdx) => {
-              if (testRegex.test(techPart)) {
-                return (
-                  <span key={techIdx} className="tech-token">
-                    {techPart}
-                  </span>
-                );
-              }
-              return techPart;
-            });
-          });
-
-          return (
-            <div key={lineIdx} className="message-line">
-              {parsedLineContent}
-            </div>
-          );
-        })}
-      </div>
-    );
-  });
-};
+// Renders assistant message content as proper markdown (bold, tables,
+// code blocks, lists, etc.) using react-markdown + remark-gfm.
+// Custom component overrides keep the existing visual CSS classes intact.
+const MarkdownMessage = ({ content }) => (
+  <ReactMarkdown
+    remarkPlugins={[remarkGfm]}
+    components={{
+      // Fenced code blocks → existing system-output-block style
+      pre: ({ children }) => (
+        <pre className="system-output-block">{children}</pre>
+      ),
+      code: ({ inline, children, ...props }) =>
+        inline ? (
+          <code className="inline-code-span" {...props}>{children}</code>
+        ) : (
+          <code {...props}>{children}</code>
+        ),
+      // Blockquotes → existing system-output-line style
+      blockquote: ({ children }) => (
+        <div className="system-output-line">{children}</div>
+      ),
+      // Tables — styled inline so they fit the dark theme
+      table: ({ children }) => (
+        <div style={{ overflowX: 'auto', margin: '12px 0' }}>
+          <table style={{
+            borderCollapse: 'collapse',
+            width: '100%',
+            fontSize: '0.82rem',
+            lineHeight: 1.5,
+          }}>{children}</table>
+        </div>
+      ),
+      th: ({ children }) => (
+        <th style={{
+          padding: '7px 12px',
+          borderBottom: '1px solid var(--border-strong)',
+          textAlign: 'left',
+          fontWeight: 600,
+          color: 'var(--primary-light)',
+          whiteSpace: 'nowrap',
+        }}>{children}</th>
+      ),
+      td: ({ children }) => (
+        <td style={{
+          padding: '6px 12px',
+          borderBottom: '1px solid var(--border-subtle)',
+          verticalAlign: 'top',
+        }}>{children}</td>
+      ),
+      // Paragraphs — keep spacing tidy inside the bubble
+      p: ({ children }) => (
+        <div className="message-paragraph">{children}</div>
+      ),
+    }}
+  >
+    {content}
+  </ReactMarkdown>
+);
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState([]);
@@ -277,7 +241,7 @@ export default function ChatInterface() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minWidth: 0 }}>
                 <div className="message-bubble">
-                  {msg.role === 'assistant' ? parseMessageContent(msg.content) : msg.content}
+                  {msg.role === 'assistant' ? <MarkdownMessage content={msg.content} /> : msg.content}
                 </div>
                 {msg.role === 'assistant' && <SourceCard sources={msg.sources} />}
               </div>
