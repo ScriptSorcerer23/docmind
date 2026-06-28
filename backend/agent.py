@@ -1,6 +1,6 @@
 """
-CrewAI agent — orchestrates retrieval decisions via direct Python tools.
-LLM: gemini/gemini-2.5-flash (CrewAI native Gemini provider).
+DocMind agent — orchestrates retrieval decisions via direct Python tools.
+All LLM calls (routing + summarization + comparison) use GROQ_MODEL via litellm.
 """
 
 import os
@@ -14,7 +14,7 @@ from typing import List, Tuple
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-import google.generativeai as genai
+
 
 def tool(name):
     def decorator(fn):
@@ -22,33 +22,18 @@ def tool(name):
         return fn
     return decorator
 
-from config import GOOGLE_API_KEY, GROQ_API_KEY, supabase, embedder
+from config import GROQ_API_KEY, supabase, embedder
 from models import Source
 
-# Configure Gemini client for helper tools
-genai.configure(api_key=GOOGLE_API_KEY)
 os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 logger = logging.getLogger(__name__)
 
 # llama-3.1-8b-instant is deprecated by Groq (shutdown 08/16/26).
 # Migrated to their recommended replacement: openai/gpt-oss-20b.
 # See: https://console.groq.com/docs/deprecations
+# This model is now used for ALL LLM calls: routing, summarization,
+# and comparison — removing the previous Gemini dependency entirely.
 GROQ_MODEL = "groq/openai/gpt-oss-20b"
-
-# Used only inside summarize_document and compare_documents (NOT the main
-# conversational/tool-routing model — that's GROQ_MODEL above). This is a
-# separate model call for generating summary/comparison text after Groq has
-# already decided to call one of these tools.
-#
-# NOTE: this has not been independently verified against this project's
-# actual Gemini API key/tier -- neither summarize_document nor
-# compare_documents has been exercised in a passing automated test run yet.
-# Verify directly (ask the agent to "summarize <file>" / "compare <a> and
-# <b>") after any deploy that touches this constant. gemini-3.5-flash is a
-# real, current model (released at Google I/O, May 19 2026) -- don't swap
-# it based on an unverified "this model doesn't exist" claim; confirm via
-# an actual API error or Google's own docs first.
-GEMINI_TOOL_MODEL = "gemini-3.5-flash"
 
 
 # ── Direct Agentic Tools ───────────────────────────────────────────
@@ -166,9 +151,13 @@ def summarize_document(filename: str, session_id: str) -> str:
             f"Content:\n{full_text}"
         )
 
-        model = genai.GenerativeModel(GEMINI_TOOL_MODEL)
-        response = model.generate_content(prompt)
-        return response.text
+        import litellm
+        response = litellm.completion(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+        return response.choices[0].message.content
     except Exception as e:
         logger.error("Error in summarize_document tool: %s", e)
         return f"Error summarizing document '{filename}': {str(e)}"
@@ -223,9 +212,13 @@ def compare_documents(filenames: str, session_id: str) -> str:
         for i, (fname, text) in enumerate(comparison_data, 1):
             prompt += f"Document {i}: {fname}\nContent Preview:\n{text[:10000]}\n\n---\n\n"
 
-        model = genai.GenerativeModel(GEMINI_TOOL_MODEL)
-        response = model.generate_content(prompt)
-        return response.text
+        import litellm
+        response = litellm.completion(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+        return response.choices[0].message.content
     except Exception as e:
         logger.error("Error in compare_documents tool: %s", e)
         return f"Error comparing documents: {str(e)}"
