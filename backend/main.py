@@ -204,9 +204,9 @@ def chat(request: ChatRequest, session_id: str = Depends(require_session_id)):
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest, session_id: str = Depends(require_session_id)):
     """SSE endpoint: streams tool_call / tool_result / done / error events
-    as the agentic loop runs.  The existing /chat endpoint is untouched.
+    as the agentic loop runs. The existing /chat endpoint is untouched.
 
-    Each SSE frame is a standard `data: <json>\n\n` line.
+    Each SSE frame is a standard `data: <json>\\n\\n` line.
     session_id is injected server-side and NEVER appears in any emitted event.
     """
     import json
@@ -224,7 +224,7 @@ async def chat_stream(request: ChatRequest, session_id: str = Depends(require_se
     async def event_generator():
         try:
             # _stream_with_groq is a synchronous generator — run it in a
-            # thread so it doesn't block the async event loop.  We advance
+            # thread so it doesn't block the async event loop. We advance
             # it one step at a time using asyncio.to_thread on __next__.
             gen = _stream_with_groq(
                 request.message,

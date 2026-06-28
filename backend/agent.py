@@ -35,6 +35,21 @@ logger = logging.getLogger(__name__)
 # See: https://console.groq.com/docs/deprecations
 GROQ_MODEL = "groq/openai/gpt-oss-20b"
 
+# Used only inside summarize_document and compare_documents (NOT the main
+# conversational/tool-routing model — that's GROQ_MODEL above). This is a
+# separate model call for generating summary/comparison text after Groq has
+# already decided to call one of these tools.
+#
+# NOTE: this has not been independently verified against this project's
+# actual Gemini API key/tier -- neither summarize_document nor
+# compare_documents has been exercised in a passing automated test run yet.
+# Verify directly (ask the agent to "summarize <file>" / "compare <a> and
+# <b>") after any deploy that touches this constant. gemini-3.5-flash is a
+# real, current model (released at Google I/O, May 19 2026) -- don't swap
+# it based on an unverified "this model doesn't exist" claim; confirm via
+# an actual API error or Google's own docs first.
+GEMINI_TOOL_MODEL = "gemini-3.5-flash"
+
 
 # ── Direct Agentic Tools ───────────────────────────────────────────
 
@@ -119,9 +134,9 @@ def summarize_document(filename: str, session_id: str) -> str:
         )
         if not doc_res.data:
             return f"Document '{filename}' not found."
-        
+
         doc_id = doc_res.data[0]["id"]
-        
+
         # Get all chunks
         chunks_res = (
             supabase.table("document_chunks")
@@ -132,17 +147,17 @@ def summarize_document(filename: str, session_id: str) -> str:
         chunks = chunks_res.data or []
         if not chunks:
             return f"Document '{filename}' has no content."
-        
+
         # Sort chunks by chunk_index metadata
         def get_chunk_index(c):
             meta = c.get("metadata")
             if isinstance(meta, dict):
                 return meta.get("chunk_index", 0)
             return 0
-            
+
         sorted_chunks = sorted(chunks, key=get_chunk_index)
         full_text = "\n\n".join([c["content"] for c in sorted_chunks])
-        
+
         prompt = (
             f"You are a Document Summarization AI. "
             f"Please generate a comprehensive summary of the following document content. "
@@ -150,8 +165,8 @@ def summarize_document(filename: str, session_id: str) -> str:
             f"Document Filename: {filename}\n\n"
             f"Content:\n{full_text}"
         )
-        
-        model = genai.GenerativeModel("gemini-2.0-flash")
+
+        model = genai.GenerativeModel(GEMINI_TOOL_MODEL)
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -168,7 +183,7 @@ def compare_documents(filenames: str, session_id: str) -> str:
         names = [n.strip() for n in filenames.split(",") if n.strip()]
         if len(names) < 2:
             return "Please provide at least two document filenames to compare."
-            
+
         comparison_data = []
         for filename in names:
             doc_res = (
@@ -181,7 +196,7 @@ def compare_documents(filenames: str, session_id: str) -> str:
             if not doc_res.data:
                 return f"Document '{filename}' not found for comparison."
             doc_id = doc_res.data[0]["id"]
-            
+
             chunks_res = (
                 supabase.table("document_chunks")
                 .select("content, metadata")
@@ -189,17 +204,17 @@ def compare_documents(filenames: str, session_id: str) -> str:
                 .execute()
             )
             chunks = chunks_res.data or []
-            
+
             def get_chunk_index(c):
                 meta = c.get("metadata")
                 if isinstance(meta, dict):
                     return meta.get("chunk_index", 0)
                 return 0
-            
+
             sorted_chunks = sorted(chunks, key=get_chunk_index)
             full_text = "\n\n".join([c["content"] for c in sorted_chunks])
             comparison_data.append((filename, full_text))
-            
+
         prompt = (
             f"You are a Document Comparison AI. "
             f"Please perform a comparative analysis of the following {len(comparison_data)} documents. "
@@ -207,8 +222,8 @@ def compare_documents(filenames: str, session_id: str) -> str:
         )
         for i, (fname, text) in enumerate(comparison_data, 1):
             prompt += f"Document {i}: {fname}\nContent Preview:\n{text[:10000]}\n\n---\n\n"
-            
-        model = genai.GenerativeModel("gemini-2.0-flash")
+
+        model = genai.GenerativeModel(GEMINI_TOOL_MODEL)
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -233,22 +248,115 @@ def get_crew_response(
         raise
 
 
-def _run_with_groq(
-    message: str,
-    conversation_history: list,
-    session_id: str,
-) -> Tuple[str, List[Source]]:
-    """Run via Groq LLM (configured in GROQ_MODEL) using litellm, with a
-    bounded agentic loop supporting chained/multi-step tool calls.
-    Supports all four tools: retrieve_documents, list_available_documents,
-    summarize_document, and compare_documents.
+# ── Shared building blocks for the Groq tool-calling loop ──────────
+# Used by both _run_with_groq (non-streaming, used by /chat) and
+# _stream_with_groq (streaming generator, used by /chat/stream). Kept as
+# module-level constants/functions so both paths stay in sync without
+# duplicating logic that has nothing to do with streaming vs. non-streaming.
+
+GROQ_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve_documents",
+            "description": "Search uploaded documents for relevant content. ALWAYS use this when the user asks about a specific person, their skills, experience, or any document-specific information.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query"},
+                    "top_k": {"type": "integer", "description": "Number of results", "default": 5}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_available_documents",
+            "description": "List all uploaded documents in the knowledge base. Use this when the user asks what documents/files are available or uploaded.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "summarize_document",
+            "description": "Generate a summary of a specific uploaded document, identified by its exact filename.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "The exact filename of the document to summarize"}
+                },
+                "required": ["filename"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_documents",
+            "description": "Compare the contents of two or more uploaded documents.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filenames": {
+                        "type": "string",
+                        "description": "Comma-separated list of exact filenames to compare, e.g. 'report_q1.pdf, report_q2.pdf'"
+                    }
+                },
+                "required": ["filenames"]
+            }
+        }
+    }
+]
+
+GROQ_SYSTEM_PROMPT = (
+    "You are a Document Intelligence Analyst with four tools: "
+    "retrieve_documents, list_available_documents, summarize_document, and compare_documents.\n"
+    "- For ANY question about a person's skills, experience, background, education, or work, "
+    "or any factual question that could be answered by an uploaded document — "
+    "ALWAYS call retrieve_documents first. Never answer from general knowledge about people.\n"
+    "- If the user asks what documents/files are available or uploaded — call list_available_documents.\n"
+    "- If the user asks to summarize a specific document — call summarize_document with its filename.\n"
+    "- If the user asks to compare two or more documents — call compare_documents with a "
+    "comma-separated list of filenames.\n"
+    "- For greetings and pure general knowledge (capitals, math, definitions) — answer directly without tools.\n"
+    "When you use retrieved content, cite the source filename and page number in your answer.\n"
+    "CRITICAL: When a tool returns specific information (filenames, dates, content), you MUST include "
+    "those exact specifics in your final answer to the user. Never reply with a vague summary like "
+    "'these are the available documents' without actually naming them. If list_available_documents "
+    "returns a list of filenames, list every one of those filenames by name in your reply.\n"
+    "QUERY EXTRACTION: when calling retrieve_documents, the `query` argument must be a short, clean "
+    "search phrase containing only the core subject and what's being asked about — strip out greetings, "
+    "small talk, filler, or unrelated context the user included before/after the actual question. "
+    "For example, if the user says 'so work has been crazy lately, anyway quick question, what's the "
+    "budget for Project Phoenix, let me know whenever', the query should be 'Project Phoenix budget', "
+    "not the full sentence. A noisy query produces a worse embedding match and can cause real answers "
+    "to be missed."
+)
+
+
+def _build_messages(message: str, conversation_history: list) -> list:
+    messages = [{"role": "system", "content": GROQ_SYSTEM_PROMPT}]
+    for item in conversation_history:
+        role = item.get("role") or "user"
+        content = item.get("content") or ""
+        messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": message})
+    return messages
+
+
+def _make_completion_with_retry(litellm_module, log_prefix=""):
+    """Returns a completion_with_retry closure bound to a given litellm module
+    and log prefix, so both _run_with_groq and _stream_with_groq get
+    identical retry/backoff behavior without duplicating the implementation.
     """
-    print("[GROQ] _run_with_groq executed")
-    import litellm
-    import json
-    import re
     import time
-    from models import Source
 
     def completion_with_retry(max_retries=3, base_delay=2.0, **kwargs):
         """Wrap litellm.completion with retry+backoff on transient rate limits.
@@ -258,121 +366,112 @@ def _run_with_groq(
         last_err = None
         for attempt in range(max_retries):
             try:
-                return litellm.completion(**kwargs)
-            except litellm.exceptions.RateLimitError as e:
+                return litellm_module.completion(**kwargs)
+            except litellm_module.exceptions.RateLimitError as e:
                 last_err = e
                 delay = base_delay * (2 ** attempt)  # 2s, 4s, 8s
                 logger.warning(
-                    "Groq rate limit hit (attempt %d/%d) — retrying in %.1fs",
-                    attempt + 1, max_retries, delay,
+                    "%sGroq rate limit hit (attempt %d/%d) — retrying in %.1fs",
+                    log_prefix, attempt + 1, max_retries, delay,
                 )
                 time.sleep(delay)
         raise last_err
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "retrieve_documents",
-                "description": "Search uploaded documents for relevant content. ALWAYS use this when the user asks about a specific person, their skills, experience, or any document-specific information.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "The search query"},
-                        "top_k": {"type": "integer", "description": "Number of results", "default": 5}
-                    },
-                    "required": ["query"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_available_documents",
-                "description": "List all uploaded documents in the knowledge base. Use this when the user asks what documents/files are available or uploaded.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "summarize_document",
-                "description": "Generate a summary of a specific uploaded document, identified by its exact filename.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filename": {"type": "string", "description": "The exact filename of the document to summarize"}
-                    },
-                    "required": ["filename"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "compare_documents",
-                "description": "Compare the contents of two or more uploaded documents.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filenames": {
-                            "type": "string",
-                            "description": "Comma-separated list of exact filenames to compare, e.g. 'report_q1.pdf, report_q2.pdf'"
-                        }
-                    },
-                    "required": ["filenames"]
-                }
-            }
-        }
-    ]
+    return completion_with_retry
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a Document Intelligence Analyst with four tools: "
-                "retrieve_documents, list_available_documents, summarize_document, and compare_documents.\n"
-                "- For ANY question about a person's skills, experience, background, education, or work, "
-                "or any factual question that could be answered by an uploaded document — "
-                "ALWAYS call retrieve_documents first. Never answer from general knowledge about people.\n"
-                "- If the user asks what documents/files are available or uploaded — call list_available_documents.\n"
-                "- If the user asks to summarize a specific document — call summarize_document with its filename.\n"
-                "- If the user asks to compare two or more documents — call compare_documents with a "
-                "comma-separated list of filenames.\n"
-                "- For greetings and pure general knowledge (capitals, math, definitions) — answer directly without tools.\n"
-                "When you use retrieved content, cite the source filename and page number in your answer.\n"
-                "CRITICAL: When a tool returns specific information (filenames, dates, content), you MUST include "
-                "those exact specifics in your final answer to the user. Never reply with a vague summary like "
-                "'these are the available documents' without actually naming them. If list_available_documents "
-                "returns a list of filenames, list every one of those filenames by name in your reply.\n"
-                "QUERY EXTRACTION: when calling retrieve_documents, the `query` argument must be a short, clean "
-                "search phrase containing only the core subject and what's being asked about — strip out greetings, "
-                "small talk, filler, or unrelated context the user included before/after the actual question. "
-                "For example, if the user says 'so work has been crazy lately, anyway quick question, what's the "
-                "budget for Project Phoenix, let me know whenever', the query should be 'Project Phoenix budget', "
-                "not the full sentence. A noisy query produces a worse embedding match and can cause real answers "
-                "to be missed."
+
+def _dispatch_tool_call(fn_name: str, args: dict, session_id: str):
+    """Executes one tool call and returns (tool_result_str, sources_added).
+    Shared by both the streaming and non-streaming loops so the dispatch
+    logic — and the session_id scoping it relies on — only exists in one
+    place. session_id always comes from the function parameter here, never
+    from `args` (the LLM's tool schema never exposes it as a parameter).
+    """
+    sources_added: List[Source] = []
+
+    if fn_name == "retrieve_documents":
+        query = args.get("query")
+        top_k = args.get("top_k", 5)
+        fn = getattr(retrieve_documents, "func", retrieve_documents)
+        tool_result = fn(query=query, top_k=top_k, session_id=session_id)
+
+        source_pattern = re.compile(
+            r"\[Source:\s*(.+?)\s*\|\s*Page:\s*(\S+)\s*\|\s*Similarity:\s*([\d.]+)\]"
+        )
+        for m in source_pattern.finditer(tool_result):
+            page_val = m.group(2)
+            sources_added.append(
+                Source(
+                    filename=m.group(1).strip(),
+                    chunk_preview="",
+                    page=int(page_val) if page_val.isdigit() else None,
+                    similarity=float(m.group(3)),
+                )
             )
-        }
-    ]
-    for item in conversation_history:
-        role = item.get("role") or "user"
-        content = item.get("content") or ""
-        messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": message})
+
+    elif fn_name == "list_available_documents":
+        fn = getattr(list_available_documents, "func", list_available_documents)
+        tool_result = fn(session_id=session_id)
+
+    elif fn_name == "summarize_document":
+        filename = args.get("filename", "")
+        fn = getattr(summarize_document, "func", summarize_document)
+        tool_result = fn(filename=filename, session_id=session_id)
+
+    elif fn_name == "compare_documents":
+        filenames = args.get("filenames", "")
+        fn = getattr(compare_documents, "func", compare_documents)
+        tool_result = fn(filenames=filenames, session_id=session_id)
+
+    else:
+        tool_result = f"Unknown tool: {fn_name}"
+
+    return tool_result, sources_added
+
+
+def _friendly_agent_error(error_str: str) -> str:
+    """Shared friendly-message mapping, used by both the non-streaming
+    exception path (re-raised to main.py's /chat handler) and the
+    streaming path's inline error event.
+    """
+    if "429" in error_str or "quota" in error_str.lower() or "RESOURCE_EXHAUSTED" in error_str:
+        return "I'm a bit overwhelmed right now — too many requests at once. Please wait a moment and try again."
+    elif "timeout" in error_str.lower():
+        return "That took too long to process. Please try again."
+    elif "connect" in error_str.lower() or "connection" in error_str.lower():
+        return "I'm having trouble connecting to my services. Please check your internet connection and try again."
+    return "Something went wrong on my end. Please try again in a moment."
+
+
+def _run_with_groq(
+    message: str,
+    conversation_history: list,
+    session_id: str,
+) -> Tuple[str, List[Source]]:
+    """Run via Groq LLM (configured in GROQ_MODEL) using litellm, with a
+    bounded agentic loop supporting chained/multi-step tool calls.
+    Supports all four tools: retrieve_documents, list_available_documents,
+    summarize_document, and compare_documents.
+
+    Used by /chat (non-streaming). Behavior is unchanged from before the
+    streaming feature was added — /chat/stream uses the separate
+    _stream_with_groq generator below instead of touching this function.
+    """
+    print("[GROQ] _run_with_groq executed")
+    import litellm
+    import json
+
+    completion_with_retry = _make_completion_with_retry(litellm)
+    messages = _build_messages(message, conversation_history)
 
     MAX_TOOL_ITERATIONS = 5  # safety cap against runaway/looping tool calls
 
-    sources = []
+    sources: List[Source] = []
     for iteration in range(MAX_TOOL_ITERATIONS):
         response = completion_with_retry(
             model=GROQ_MODEL,
             messages=messages,
-            tools=tools,
+            tools=GROQ_TOOLS,
             tool_choice="auto",
             temperature=0.0
         )
@@ -393,43 +492,8 @@ def _run_with_groq(
             except json.JSONDecodeError:
                 args = {}
 
-            if fn_name == "retrieve_documents":
-                query = args.get("query")
-                top_k = args.get("top_k", 5)
-                fn = getattr(retrieve_documents, "func", retrieve_documents)
-                tool_result = fn(query=query, top_k=top_k, session_id=session_id)
-
-                # Parse sources from the tool result
-                source_pattern = re.compile(
-                    r"\[Source:\s*(.+?)\s*\|\s*Page:\s*(\S+)\s*\|\s*Similarity:\s*([\d.]+)\]"
-                )
-                for m in source_pattern.finditer(tool_result):
-                    page_val = m.group(2)
-                    sources.append(
-                        Source(
-                            filename=m.group(1).strip(),
-                            chunk_preview="",
-                            page=int(page_val) if page_val.isdigit() else None,
-                            similarity=float(m.group(3)),
-                        )
-                    )
-
-            elif fn_name == "list_available_documents":
-                fn = getattr(list_available_documents, "func", list_available_documents)
-                tool_result = fn(session_id=session_id)
-
-            elif fn_name == "summarize_document":
-                filename = args.get("filename", "")
-                fn = getattr(summarize_document, "func", summarize_document)
-                tool_result = fn(filename=filename, session_id=session_id)
-
-            elif fn_name == "compare_documents":
-                filenames = args.get("filenames", "")
-                fn = getattr(compare_documents, "func", compare_documents)
-                tool_result = fn(filenames=filenames, session_id=session_id)
-
-            else:
-                tool_result = f"Unknown tool: {fn_name}"
+            tool_result, new_sources = _dispatch_tool_call(fn_name, args, session_id)
+            sources.extend(new_sources)
 
             messages.append({
                 "role": "tool",
@@ -448,7 +512,7 @@ def _run_with_groq(
     final_response = completion_with_retry(
         model=GROQ_MODEL,
         messages=messages,
-        tools=tools,
+        tools=GROQ_TOOLS,
         tool_choice="none",
         temperature=0.0
     )
@@ -463,6 +527,11 @@ def _stream_with_groq(
     """Generator variant of _run_with_groq that yields SSE-ready event dicts
     as the agentic loop runs, then yields a final 'done' event.
 
+    Used by /chat/stream only. _run_with_groq (used by /chat) is completely
+    untouched by this function's existence — they share the tool schema,
+    system prompt, retry helper, and dispatch logic via the module-level
+    helpers above, but neither calls the other.
+
     Yields dicts matching one of these shapes:
       {"type": "tool_call",   "tool": <name>, "args": <client-safe args>}
       {"type": "tool_result", "tool": <name>, "summary": <short human text>}
@@ -474,133 +543,19 @@ def _stream_with_groq(
     """
     import litellm
     import json as _json
-    import re as _re
-    import time
-    from models import Source
 
-    # ── shared retry helper (identical to the one inside _run_with_groq) ──
-    def completion_with_retry(max_retries=3, base_delay=2.0, **kwargs):
-        last_err = None
-        for attempt in range(max_retries):
-            try:
-                return litellm.completion(**kwargs)
-            except litellm.exceptions.RateLimitError as e:
-                last_err = e
-                delay = base_delay * (2 ** attempt)
-                logger.warning(
-                    "[stream] Groq rate limit (attempt %d/%d) — retrying in %.1fs",
-                    attempt + 1, max_retries, delay,
-                )
-                time.sleep(delay)
-        raise last_err
-
-    # ── tool schema (identical to _run_with_groq) ─────────────────────────
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "retrieve_documents",
-                "description": "Search uploaded documents for relevant content. ALWAYS use this when the user asks about a specific person, their skills, experience, or any document-specific information.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "The search query"},
-                        "top_k": {"type": "integer", "description": "Number of results", "default": 5}
-                    },
-                    "required": ["query"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_available_documents",
-                "description": "List all uploaded documents in the knowledge base. Use this when the user asks what documents/files are available or uploaded.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "summarize_document",
-                "description": "Generate a summary of a specific uploaded document, identified by its exact filename.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filename": {"type": "string", "description": "The exact filename of the document to summarize"}
-                    },
-                    "required": ["filename"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "compare_documents",
-                "description": "Compare the contents of two or more uploaded documents.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filenames": {
-                            "type": "string",
-                            "description": "Comma-separated list of exact filenames to compare, e.g. 'report_q1.pdf, report_q2.pdf'"
-                        }
-                    },
-                    "required": ["filenames"]
-                }
-            }
-        }
-    ]
-
-    # ── system prompt + history (identical to _run_with_groq) ────────────
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a Document Intelligence Analyst with four tools: "
-                "retrieve_documents, list_available_documents, summarize_document, and compare_documents.\n"
-                "- For ANY question about a person's skills, experience, background, education, or work, "
-                "or any factual question that could be answered by an uploaded document — "
-                "ALWAYS call retrieve_documents first. Never answer from general knowledge about people.\n"
-                "- If the user asks what documents/files are available or uploaded — call list_available_documents.\n"
-                "- If the user asks to summarize a specific document — call summarize_document with its filename.\n"
-                "- If the user asks to compare two or more documents — call compare_documents with a "
-                "comma-separated list of filenames.\n"
-                "- For greetings and pure general knowledge (capitals, math, definitions) — answer directly without tools.\n"
-                "When you use retrieved content, cite the source filename and page number in your answer.\n"
-                "CRITICAL: When a tool returns specific information (filenames, dates, content), you MUST include "
-                "those exact specifics in your final answer to the user. Never reply with a vague summary like "
-                "'these are the available documents' without actually naming them. If list_available_documents "
-                "returns a list of filenames, list every one of those filenames by name in your reply.\n"
-                "QUERY EXTRACTION: when calling retrieve_documents, the `query` argument must be a short, clean "
-                "search phrase containing only the core subject and what's being asked about — strip out greetings, "
-                "small talk, filler, or unrelated context the user included before/after the actual question. "
-                "For example, if the user says 'so work has been crazy lately, anyway quick question, what's the "
-                "budget for Project Phoenix, let me know whenever', the query should be 'Project Phoenix budget', "
-                "not the full sentence. A noisy query produces a worse embedding match and can cause real answers "
-                "to be missed."
-            )
-        }
-    ]
-    for item in conversation_history:
-        role = item.get("role") or "user"
-        content = item.get("content") or ""
-        messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": message})
+    completion_with_retry = _make_completion_with_retry(litellm, log_prefix="[stream] ")
+    messages = _build_messages(message, conversation_history)
 
     MAX_TOOL_ITERATIONS = 5
-    sources = []
+    sources: List[Source] = []
 
     try:
         for iteration in range(MAX_TOOL_ITERATIONS):
             response = completion_with_retry(
                 model=GROQ_MODEL,
                 messages=messages,
-                tools=tools,
+                tools=GROQ_TOOLS,
                 tool_choice="auto",
                 temperature=0.0
             )
@@ -626,72 +581,42 @@ def _stream_with_groq(
                 except _json.JSONDecodeError:
                     args = {}
 
-                # Build client-safe args: never include session_id.
+                # Client-safe args for the emitted event — session_id is
+                # never part of `args` to begin with (the LLM's tool schema
+                # never exposes it), but this filters defensively anyway.
                 client_args = {k: v for k, v in args.items() if k != "session_id"}
-
-                # ── emit: tool about to run ───────────────────────────────
                 yield {"type": "tool_call", "tool": fn_name, "args": client_args}
 
-                # ── dispatch (identical session-scoping as _run_with_groq) ─
-                if fn_name == "retrieve_documents":
-                    query = args.get("query")
-                    top_k = args.get("top_k", 5)
-                    fn = getattr(retrieve_documents, "func", retrieve_documents)
-                    tool_result = fn(query=query, top_k=top_k, session_id=session_id)
+                tool_result, new_sources = _dispatch_tool_call(fn_name, args, session_id)
+                sources.extend(new_sources)
 
-                    # Parse sources
-                    source_pattern = _re.compile(
-                        r"\[Source:\s*(.+?)\s*\|\s*Page:\s*(\S+)\s*\|\s*Similarity:\s*([\d.]+)\]"
-                    )
-                    chunk_count = 0
-                    for m in source_pattern.finditer(tool_result):
-                        page_val = m.group(2)
-                        sources.append(
-                            Source(
-                                filename=m.group(1).strip(),
-                                chunk_preview="",
-                                page=int(page_val) if page_val.isdigit() else None,
-                                similarity=float(m.group(3)),
-                            )
-                        )
-                        chunk_count += 1
+                # Build a short, human-readable summary for the UI — never
+                # the raw tool_result (which can contain full chunk text).
+                if fn_name == "retrieve_documents":
                     if "No relevant content" in tool_result:
                         summary = "No relevant content found"
                     else:
-                        summary = f"Found {chunk_count} relevant chunk{'s' if chunk_count != 1 else ''}"
-
+                        summary = f"Found {len(new_sources)} relevant chunk{'s' if len(new_sources) != 1 else ''}"
                 elif fn_name == "list_available_documents":
-                    fn = getattr(list_available_documents, "func", list_available_documents)
-                    tool_result = fn(session_id=session_id)
                     if "No documents" in tool_result:
                         summary = "No documents uploaded yet"
                     else:
                         doc_count = tool_result.count("\n- ") + (1 if "- " in tool_result else 0)
                         summary = f"Found {doc_count} document{'s' if doc_count != 1 else ''}"
-
                 elif fn_name == "summarize_document":
                     filename = args.get("filename", "")
-                    fn = getattr(summarize_document, "func", summarize_document)
-                    tool_result = fn(filename=filename, session_id=session_id)
                     if "not found" in tool_result.lower() or "error" in tool_result.lower():
                         summary = f"Could not summarize '{filename}'"
                     else:
                         summary = "Summary generated"
-
                 elif fn_name == "compare_documents":
-                    filenames = args.get("filenames", "")
-                    fn = getattr(compare_documents, "func", compare_documents)
-                    tool_result = fn(filenames=filenames, session_id=session_id)
                     if "not found" in tool_result.lower() or "error" in tool_result.lower():
                         summary = "Could not compare documents"
                     else:
                         summary = "Comparison complete"
-
                 else:
-                    tool_result = f"Unknown tool: {fn_name}"
                     summary = f"Unknown tool: {fn_name}"
 
-                # ── emit: tool finished ───────────────────────────────────
                 yield {"type": "tool_result", "tool": fn_name, "summary": summary}
 
                 messages.append({
@@ -706,7 +631,7 @@ def _stream_with_groq(
         final_response = completion_with_retry(
             model=GROQ_MODEL,
             messages=messages,
-            tools=tools,
+            tools=GROQ_TOOLS,
             tool_choice="none",
             temperature=0.0
         )
@@ -719,16 +644,7 @@ def _stream_with_groq(
     except Exception as e:
         import traceback
         traceback.print_exc()
-        error_str = str(e)
-        if "429" in error_str or "quota" in error_str.lower() or "RESOURCE_EXHAUSTED" in error_str:
-            user_msg = "I'm a bit overwhelmed right now — too many requests at once. Please wait a moment and try again."
-        elif "timeout" in error_str.lower():
-            user_msg = "That took too long to process. Please try again."
-        elif "connect" in error_str.lower() or "connection" in error_str.lower():
-            user_msg = "I'm having trouble connecting to my services. Please check your internet connection and try again."
-        else:
-            user_msg = "Something went wrong on my end. Please try again in a moment."
-        yield {"type": "error", "message": user_msg}
+        yield {"type": "error", "message": _friendly_agent_error(str(e))}
 
 
 def _run_crew(
@@ -740,7 +656,7 @@ def _run_crew(
         print("[GROQ] _run_crew executed")
     else:
         print("[GEMINI] _run_crew executed")
-        
+
     tools = [retrieve_documents, list_available_documents, summarize_document, compare_documents]
 
     analyst = Agent(
