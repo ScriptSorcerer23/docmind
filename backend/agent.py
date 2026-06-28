@@ -30,6 +30,11 @@ genai.configure(api_key=GOOGLE_API_KEY)
 os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 logger = logging.getLogger(__name__)
 
+# llama-3.1-8b-instant is deprecated by Groq (shutdown 08/16/26).
+# Migrated to their recommended replacement: openai/gpt-oss-20b.
+# See: https://console.groq.com/docs/deprecations
+GROQ_MODEL = "groq/openai/gpt-oss-20b"
+
 
 # ── Direct Agentic Tools ───────────────────────────────────────────
 
@@ -331,7 +336,7 @@ def _run_with_groq(
 
     # Call litellm completion
     response = litellm.completion(
-        model="groq/llama-3.1-8b-instant",
+        model=GROQ_MODEL,
         messages=messages,
         tools=tools,
         tool_choice="auto",
@@ -398,7 +403,7 @@ def _run_with_groq(
         
         # Get final response from LLM
         final_response = litellm.completion(
-            model="groq/llama-3.1-8b-instant",
+            model=GROQ_MODEL,
             messages=messages,
             temperature=0.0
         )

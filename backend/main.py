@@ -121,7 +121,18 @@ async def upload_document(
         )
     except Exception as e:
         error_str = str(e)
-        if "0 chunks" in error_str.lower() or "empty" in error_str.lower():
+        if "SESSION_DOCUMENT_LIMIT_REACHED" in error_str:
+            # The DB trigger is the source of truth for the cap — this branch
+            # catches the rare race where two uploads passed the earlier
+            # fast-path count check at nearly the same instant.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"You've reached the limit of {MAX_DOCUMENTS_PER_SESSION} documents "
+                    f"for this session. Please delete one before uploading another."
+                ),
+            )
+        elif "0 chunks" in error_str.lower() or "empty" in error_str.lower():
             user_message = "This file doesn't appear to contain readable text. Please try a different PDF."
         elif "size" in error_str.lower() or "large" in error_str.lower():
             user_message = "This file is too large to process. Please try a smaller document."
