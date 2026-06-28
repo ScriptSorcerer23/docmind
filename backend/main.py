@@ -15,6 +15,7 @@ if sys.platform == "win32":
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from config import supabase
 from models import (
@@ -24,7 +25,7 @@ from models import (
     Source,
 )
 from ingestion import ingest_document
-from agent import get_crew_response
+from agent import get_crew_response, _stream_with_groq
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -197,3 +198,57 @@ def chat(request: ChatRequest, session_id: str = Depends(require_session_id)):
         else:
             user_message = "Something went wrong on my end. Please try again in a moment."
         raise HTTPException(status_code=500, detail=user_message)
+
+
+# ── Chat (streaming) ────────────────────────────────────────────────
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest, session_id: str = Depends(require_session_id)):
+    """SSE endpoint: streams tool_call / tool_result / done / error events
+    as the agentic loop runs.  The existing /chat endpoint is untouched.
+
+    Each SSE frame is a standard `data: <json>\n\n` line.
+    session_id is injected server-side and NEVER appears in any emitted event.
+    """
+    import json
+
+    def _friendly_error(error_str: str) -> str:
+        """Re-uses the same friendly-message mapping as /chat."""
+        if "429" in error_str or "quota" in error_str.lower() or "RESOURCE_EXHAUSTED" in error_str:
+            return "I'm a bit overwhelmed right now — too many requests at once. Please wait a moment and try again."
+        elif "timeout" in error_str.lower():
+            return "That took too long to process. Please try again."
+        elif "connect" in error_str.lower() or "connection" in error_str.lower():
+            return "I'm having trouble connecting to my services. Please check your internet connection and try again."
+        return "Something went wrong on my end. Please try again in a moment."
+
+    async def event_generator():
+        try:
+            # _stream_with_groq is a synchronous generator — run it in a
+            # thread so it doesn't block the async event loop.  We advance
+            # it one step at a time using asyncio.to_thread on __next__.
+            gen = _stream_with_groq(
+                request.message,
+                request.conversation_history,
+                session_id,          # injected server-side, not forwarded to client
+            )
+            while True:
+                try:
+                    event = await asyncio.to_thread(next, gen)
+                except StopIteration:
+                    break
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            error_event = {"type": "error", "message": _friendly_error(str(e))}
+            yield f"data: {json.dumps(error_event)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            # Disable proxy/CDN buffering so events reach the browser immediately.
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
