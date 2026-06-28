@@ -247,7 +247,27 @@ def _run_with_groq(
     import litellm
     import json
     import re
+    import time
     from models import Source
+
+    def completion_with_retry(max_retries=3, base_delay=2.0, **kwargs):
+        """Wrap litellm.completion with retry+backoff on transient rate limits.
+        A 429 from Groq's free-tier TPM cap is common under bursty traffic and
+        is not a real failure — retrying after a short wait usually succeeds.
+        """
+        last_err = None
+        for attempt in range(max_retries):
+            try:
+                return litellm.completion(**kwargs)
+            except litellm.exceptions.RateLimitError as e:
+                last_err = e
+                delay = base_delay * (2 ** attempt)  # 2s, 4s, 8s
+                logger.warning(
+                    "Groq rate limit hit (attempt %d/%d) — retrying in %.1fs",
+                    attempt + 1, max_retries, delay,
+                )
+                time.sleep(delay)
+        raise last_err
 
     tools = [
         {
@@ -349,7 +369,7 @@ def _run_with_groq(
 
     sources = []
     for iteration in range(MAX_TOOL_ITERATIONS):
-        response = litellm.completion(
+        response = completion_with_retry(
             model=GROQ_MODEL,
             messages=messages,
             tools=tools,
@@ -425,7 +445,7 @@ def _run_with_groq(
     # last call with tool_choice="none" so the model must respond in text
     # using whatever it has gathered so far, rather than failing the request.
     logger.warning("Hit MAX_TOOL_ITERATIONS (%d) without a final answer — forcing text response.", MAX_TOOL_ITERATIONS)
-    final_response = litellm.completion(
+    final_response = completion_with_retry(
         model=GROQ_MODEL,
         messages=messages,
         tools=tools,
